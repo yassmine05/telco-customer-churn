@@ -1,0 +1,22 @@
+# Raw data (download from Kaggle, see README)
+data/
+
+# Trained model artifacts (recreated by `python src/run_all.py`)
+models/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.ipynb_checkpoints/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+
+# Per-customer output (contains raw dataset rows; recreated by evaluate.py)
+results/ranked_customers_test.csv
