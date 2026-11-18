@@ -28,7 +28,8 @@ def test_reports_models_and_results_are_written(pipeline_run):
     root = pipeline_run.root
     for rel in ["reports/eda_insights.md", "models/baseline_logreg.joblib",
                 "models/xgboost.joblib", "models/metadata.json",
-                "results/xgb_cv_results.csv", "results/shap_importance.csv",
+                "results/xgb_cv_results.csv", "results/nested_cv_results.csv",
+                "results/shap_importance.csv",
                 "results/ranked_customers_test.csv", "results/metrics.csv"]:
         assert (root / rel).stat().st_size > 0, rel
 
@@ -48,6 +49,16 @@ def test_grid_search_table_covers_every_configuration(pipeline_run):
     assert len(cv) == 2                       # TINY_GRID has 2 combinations
     assert cv["rank_test_pr_auc"].iloc[0] == 1
     assert pipeline_run.meta["xgb_best_params"]["max_depth"] in (2, 3)
+
+
+def test_nested_cv_outputs_are_written(pipeline_run):
+    nested = pd.read_csv(pipeline_run.root / "results" / "nested_cv_results.csv")
+    assert len(nested) == 2 * config.OUTER_CV_FOLDS
+    summary = pipeline_run.meta["nested_cv"]
+    for model in ("baseline_logreg", "xgboost"):
+        assert set(summary[model]) == {"roc_auc_mean", "roc_auc_std",
+                                       "pr_auc_mean", "pr_auc_std"}
+    assert len(summary["xgb_params_by_fold"]) == config.OUTER_CV_FOLDS
 
 
 def test_ranked_list_covers_every_test_customer_riskiest_first(pipeline_run):

@@ -68,6 +68,22 @@ Confusion matrices at the chosen thresholds:
 
 ![Confusion matrices](reports/figures/06_confusion_matrices.png)
 
+## Nested cross-validation
+
+The cross-validation score of the winning grid-search configuration is biased upward: the same five folds that measured it also picked it out of 100 candidates. Nested cross-validation measures the whole tuning procedure instead. An outer 5-fold split of the training set wraps the grid search. In each outer fold, the search runs on the outer-training part, and the configuration it picks is scored on the outer-validation part, which the search never saw. The logistic-regression baseline has nothing to tune, so it is simply fitted and scored on the same outer folds.
+
+| | XGBoost ROC-AUC | XGBoost PR-AUC | Baseline ROC-AUC | Baseline PR-AUC |
+|---|---|---|---|---|
+| CV score of the chosen grid-search configuration (biased upward) | 0.850 | 0.671 | n/a (nothing tuned) | n/a (nothing tuned) |
+| Nested CV, mean ± std over 5 outer folds | 0.847 ± 0.005 | 0.667 ± 0.012 | 0.846 ± 0.006 | 0.662 ± 0.029 |
+| Test set (scored once) | 0.846 | 0.665 | 0.842 | 0.634 |
+
+**The optimism was small:** the old score was 0.003 higher than the nested estimate on both ROC-AUC and PR-AUC, less than one standard deviation of the nested scores. The nested ROC-AUC (0.847) lands almost exactly on the test score (0.846).
+
+**The chosen hyperparameters were not stable.** Each of the five outer folds picked a different configuration: depth 2 in three folds and depth 3 or 4 in the other two, learning rates from 0.01 to 0.05, and 200 to 800 trees. None picked exactly the final model's settings (depth 2, learning rate 0.05, 200 trees). Their scores were nevertheless close, which points to a flat optimum: in the full grid search the top 11 of 100 configurations are within 0.0015 PR-AUC of each other, so the exact choice matters little. The nested scores also confirm that XGBoost and the baseline are close to tied on ROC-AUC.
+
+Nested CV only estimates performance. The final model is still tuned by the plain grid search on the full training set, and its threshold still comes from out-of-fold predictions. Per-fold scores and parameters are in [`results/nested_cv_results.csv`](results/nested_cv_results.csv), and the summary is in `models/metadata.json` under `"nested_cv"`.
+
 ## What the data says
 
 From the training set only ([full notes](reports/eda_insights.md)):
@@ -93,7 +109,7 @@ Download `WA_Fn-UseC_-Telco-Customer-Churn.csv` from [Kaggle](https://www.kaggle
 python src/run_all.py
 ```
 
-This runs the EDA, cross-validated training, test evaluation and SHAP plots in order (about two minutes on a laptop). Figures go to `reports/figures/`, metrics are appended to `results/metrics.csv`, and the ranked customer list is written to `results/ranked_customers_test.csv`.
+This runs the EDA, cross-validated training, nested cross-validation, test evaluation and SHAP plots in order (about 7 minutes on a laptop, most of it the 2,500 model fits of nested cross-validation). Figures go to `reports/figures/`, metrics are appended to `results/metrics.csv`, and the ranked customer list is written to `results/ranked_customers_test.csv`.
 
 Optional interactive app (enter a customer, get a risk score and a SHAP explanation):
 
@@ -138,7 +154,7 @@ The 60 tests run in about 12 seconds. They do not need the Kaggle CSV or network
 ├── tests/                 pytest suite on synthetic data (see "Running the tests")
 ├── app/streamlit_app.py   interactive demo
 ├── reports/figures/       saved plots
-└── results/               metrics.csv, grid-search table, SHAP importances
+└── results/               metrics.csv, grid-search and nested-CV tables, SHAP importances
 ```
 
 Safeguards against leakage and over-optimistic numbers:
@@ -146,7 +162,7 @@ Safeguards against leakage and over-optimistic numbers:
 1. **Split first.** The stratified 80/20 split (`random_state=42`) happens before any exploration. EDA uses training rows only.
 2. **Preprocessing inside the pipeline.** Scaling and one-hot encoding are part of a scikit-learn `Pipeline`, so in cross-validation they are re-fitted on each training fold.
 3. **Decisions by cross-validation.** Hyperparameters (100 combinations of depth, learning rate and number of trees, 5 folds) and thresholds are chosen on the training set. The winning configuration is depth 2, learning rate 0.05, 200 trees; the full table is in [`results/xgb_cv_results.csv`](results/xgb_cv_results.csv).
-4. **Test set scored once.** Cross-validated and test scores agree closely (XGBoost ROC-AUC 0.850 in CV vs 0.846 on test), which is what you expect when nothing has leaked.
+4. **Test set scored once.** Cross-validated and test scores agree closely (XGBoost ROC-AUC 0.850 in CV, 0.847 in nested CV, 0.846 on test), which is what you expect when nothing has leaked.
 5. **Class imbalance** is handled with `scale_pos_weight = 4139 / 1495 = 2.77` (non-churners / churners in the training set).
 
 ## Limitations

@@ -30,14 +30,28 @@ def test_non_blank_total_charges_are_parsed_unchanged(raw_df, clean_df):
 
 def test_blank_total_charges_with_positive_tenure_is_rejected(raw_df, tmp_path):
     # data.py only fills blanks with 0 because they belong to tenure-0 customers.
-    # A blank for an existing customer would be a different problem, so it must fail.
+    # A blank for an existing customer would be a different problem, so it must
+    # fail with a ValueError (an `assert` would vanish under `python -O`).
     bad = raw_df.copy()
-    row = bad.index[bad["tenure"] > 0][0]
-    bad.loc[row, "TotalCharges"] = " "
+    rows = bad.index[bad["tenure"] > 0][:2].tolist()
+    bad.loc[rows, "TotalCharges"] = " "
     path = tmp_path / "bad.csv"
     bad.to_csv(path, index=False)
-    with pytest.raises(AssertionError, match="Blank TotalCharges"):
+    with pytest.raises(ValueError) as excinfo:
         load_and_clean(path)
+    message = str(excinfo.value)
+    assert message.startswith("2 row(s) have a blank TotalCharges but tenure > 0")
+    assert str(rows) in message
+
+
+def test_load_and_clean_has_no_bare_asserts():
+    # `python -O` strips assert statements, so data checks must not rely on them.
+    import ast
+    import inspect
+    import textwrap
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(load_and_clean)))
+    assert not [node for node in ast.walk(tree) if isinstance(node, ast.Assert)]
 
 
 def test_churn_is_mapped_to_0_and_1(raw_df, clean_df):

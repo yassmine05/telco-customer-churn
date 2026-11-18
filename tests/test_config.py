@@ -11,6 +11,7 @@ def test_reproducibility_settings_unchanged():
     assert config.SEED == 42
     assert config.TEST_SIZE == 0.20
     assert config.CV_FOLDS == 5
+    assert config.OUTER_CV_FOLDS == 5
 
 
 def test_cost_ratio_is_five_to_one():
