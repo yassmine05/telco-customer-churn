@@ -8,7 +8,6 @@ from sklearn.model_selection import StratifiedKFold
 
 import config
 import train
-
 from conftest import TINY_GRID
 
 
@@ -41,7 +40,7 @@ def outer_splits(X, y):
 def test_one_row_per_outer_fold_per_model(nested_run):
     table, _ = nested_run
     assert len(table) == 2 * config.OUTER_CV_FOLDS
-    pairs = set(zip(table["fold"], table["model"]))
+    pairs = set(zip(table["fold"], table["model"], strict=True))
     assert pairs == {(f, m) for f in range(1, config.OUTER_CV_FOLDS + 1)
                      for m in ("baseline_logreg", "xgboost")}
     assert list(table.columns) == ["fold", "model", "roc_auc", "pr_auc", "best_params"]
@@ -59,7 +58,7 @@ def test_inner_search_never_sees_outer_validation_rows(nested_run, split_data):
     _, seen_by_search = nested_run
     splits = outer_splits(X_train, y_train)
     assert len(seen_by_search) == len(splits) == config.OUTER_CV_FOLDS
-    for seen, (outer_train, outer_valid) in zip(seen_by_search, splits):
+    for seen, (outer_train, outer_valid) in zip(seen_by_search, splits, strict=True):
         assert seen.intersection(outer_valid).empty
         assert set(seen) == set(outer_train)
 

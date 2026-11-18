@@ -8,9 +8,8 @@ from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 
 import config
-from train import make_baseline, make_xgboost
-
 from conftest import SMALL_XGB_PARAMS
+from train import make_baseline, make_xgboost
 
 
 # ------------------------------------------------- preprocessing / leakage
