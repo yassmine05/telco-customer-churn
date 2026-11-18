@@ -1,0 +1,11 @@
+fold,model,roc_auc,pr_auc,best_params
+1,baseline_logreg,0.83652,0.63351,{}
+1,xgboost,0.84536,0.65962,"{""learning_rate"": 0.05, ""max_depth"": 2, ""n_estimators"": 300}"
+2,baseline_logreg,0.84645,0.66007,{}
+2,xgboost,0.85073,0.66525,"{""learning_rate"": 0.03, ""max_depth"": 2, ""n_estimators"": 300}"
+3,baseline_logreg,0.85409,0.69449,{}
+3,xgboost,0.84143,0.67804,"{""learning_rate"": 0.05, ""max_depth"": 3, ""n_estimators"": 200}"
+4,baseline_logreg,0.84650,0.68793,{}
+4,xgboost,0.85306,0.68091,"{""learning_rate"": 0.01, ""max_depth"": 2, ""n_estimators"": 800}"
+5,baseline_logreg,0.84622,0.63448,{}
+5,xgboost,0.84286,0.65309,"{""learning_rate"": 0.03, ""max_depth"": 4, ""n_estimators"": 300}"
