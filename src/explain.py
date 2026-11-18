@@ -42,7 +42,10 @@ def main():
 
     # ------------------------------------------------ global: summary plot
     plt.figure()
-    shap.summary_plot(explanation, max_display=12, show=False, plot_size=(8.5, 6))
+    # The beeswarm shuffles and jitters its dots at random; a seeded generator
+    # makes the figure byte-identical from run to run.
+    shap.summary_plot(explanation, max_display=12, show=False, plot_size=(8.5, 6),
+                      rng=np.random.default_rng(config.SEED))
     plt.title("SHAP summary: what the model relies on",
               loc="left", fontweight="bold", fontsize=13)
     plotting.save(plt.gcf(), "09_shap_summary.png")
