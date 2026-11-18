@@ -1,5 +1,9 @@
-rule,contacted,incremental_retained,share_of_best,qini_coefficient,n_sure_thing,n_sleeping_dog,n_lost_cause,n_persuadable,n_other,uplift_corr_pearson,uplift_corr_spearman
-random,282,13.7556,0.2490,0.0024,67.2000,13.4000,46.4000,64.0000,90.8000,,
-churn_risk,282,20.0800,0.3635,0.0024,0.0000,2.0000,174.0000,100.0000,6.0000,,
-predicted_uplift,282,40.3145,0.7298,0.0030,0.0000,4.0000,31.0000,202.0000,45.0000,0.6028,0.5307
-true_uplift,282,55.2425,1.0000,0.0062,0.0000,0.0000,0.0000,282.0000,0.0000,,
+scenario,rule,contacted,incremental_retained,share_of_best,qini_coefficient,n_sure_thing,n_sleeping_dog,n_lost_cause,n_persuadable,n_other,uplift_corr_pearson,uplift_corr_spearman
+main,random,282,13.7556,0.2490,0.0024,67.2000,13.4000,46.4000,64.0000,90.8000,,
+main,churn_risk,282,20.0800,0.3635,0.0024,0.0000,2.0000,174.0000,100.0000,6.0000,,
+main,predicted_uplift,282,40.3145,0.7298,0.0030,0.0000,4.0000,31.0000,202.0000,45.0000,0.6028,0.5307
+main,true_uplift,282,55.2425,1.0000,0.0062,0.0000,0.0000,0.0000,282.0000,0.0000,,
+sensitivity_high_risk_responds,random,282,14.4232,0.2950,0.0011,67.2000,13.4000,46.4000,64.0000,90.8000,,
+sensitivity_high_risk_responds,churn_risk,282,39.8800,0.8155,0.0076,0.0000,2.0000,174.0000,100.0000,6.0000,,
+sensitivity_high_risk_responds,predicted_uplift,282,32.8200,0.6712,0.0072,0.0000,7.0000,134.0000,107.0000,34.0000,0.5042,0.5259
+sensitivity_high_risk_responds,true_uplift,282,48.9000,1.0000,0.0079,0.0000,0.0000,232.0000,50.0000,0.0000,,

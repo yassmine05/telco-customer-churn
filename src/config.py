@@ -76,3 +76,16 @@ UPLIFT_SEGMENT_EFFECTS = {
     "persuadable": 0.20,
     "other": 0.03,
 }
+# SENSITIVITY SCENARIO (not the main result): the offer works best on the
+# riskiest customers. Same segments and rules; only lost causes (+0.20) and
+# persuadables (+0.05) change, so risk and uplift line up. It checks how much
+# the targeting comparison depends on the effect sizes assumed above.
+UPLIFT_SENSITIVITY_EFFECTS = {
+    **UPLIFT_SEGMENT_EFFECTS,
+    "lost_cause": 0.20,
+    "persuadable": 0.05,
+}
+UPLIFT_SCENARIOS = {
+    "main": UPLIFT_SEGMENT_EFFECTS,
+    "sensitivity_high_risk_responds": UPLIFT_SENSITIVITY_EFFECTS,
+}

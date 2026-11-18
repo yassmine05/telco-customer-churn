@@ -183,10 +183,19 @@ def test_segment_summary_reports_size_and_true_effect(clean_df):
 
 
 # ------------------------------------------- control-arm probabilities
-def test_training_control_probabilities_are_out_of_fold(calibrated, split_data):
+@pytest.fixture(scope="module")
+def control_probs(calibrated, split_data):
+    """control_probabilities() on the shared fixture, computed once (it refits
+    the calibrated model CV_FOLDS times)."""
     X_train, X_test, y_train, _ = split_data
+    return control_probabilities(calibrated, X_train, y_train, X_test)
+
+
+def test_training_control_probabilities_are_out_of_fold(calibrated, split_data,
+                                                        control_probs):
+    X_train, X_test, y_train, _ = split_data
+    p_train, p_test = control_probs
     cv = StratifiedKFold(n_splits=config.CV_FOLDS, shuffle=True, random_state=config.SEED)
-    p_train, p_test = control_probabilities(calibrated, X_train, y_train, X_test, cv)
     expected_oof = cross_val_predict(clone(calibrated), X_train, y_train, cv=cv,
                                      method="predict_proba")[:, 1]
     in_sample = calibrated.predict_proba(X_train)[:, 1]
@@ -195,12 +204,11 @@ def test_training_control_probabilities_are_out_of_fold(calibrated, split_data):
     np.testing.assert_allclose(p_test, calibrated.predict_proba(X_test)[:, 1])
 
 
-def test_simulate_uses_the_control_probabilities_and_separate_seeds(calibrated, split_data):
+def test_simulate_uses_the_control_probabilities(calibrated, split_data, control_probs):
     X_train, X_test, y_train, _ = split_data
     train_sim, test_sim = simulate(calibrated, X_train, y_train, X_test, seed=5)
-    p_train, p_test = control_probabilities(calibrated, X_train, y_train, X_test)
-    np.testing.assert_allclose(train_sim["p_control"], p_train)
-    np.testing.assert_allclose(test_sim["p_control"], p_test)
+    np.testing.assert_allclose(train_sim["p_control"], control_probs[0])
+    np.testing.assert_allclose(test_sim["p_control"], control_probs[1])
     assert train_sim.index.equals(X_train.index) and test_sim.index.equals(X_test.index)
 
 
@@ -256,14 +264,24 @@ def test_uplift_evaluation_end_to_end(pipeline_run, raw_csv, monkeypatch):
 
     assert (root / "reports" / "figures" / "12_qini_curve.png").exists()
     table = pd.read_csv(root / "results" / "uplift_targeting.csv")
-    assert table["rule"].tolist() == list(uplift_evaluate.RULES)
+    assert table["scenario"].unique().tolist() == list(config.UPLIFT_SCENARIOS)
     assert (table["contacted"] == round(len(pipeline_run.X_test)
                                         * config.UPLIFT_TARGET_FRACTION)).all()
-    by_rule = table.set_index("rule")
-    # The true-uplift ordering is the best any rule can do at this budget.
-    assert by_rule.loc["true_uplift", "share_of_best"] == pytest.approx(1.0)
-    assert (by_rule["incremental_retained"]
-            <= by_rule.loc["true_uplift", "incremental_retained"] + 1e-9).all()
+    for _, scenario in table.groupby("scenario"):
+        assert scenario["rule"].tolist() == list(uplift_evaluate.RULES)
+        by_rule = scenario.set_index("rule")
+        # The true-uplift ordering is the best any rule can do at this budget.
+        assert by_rule.loc["true_uplift", "share_of_best"] == pytest.approx(1.0)
+        assert (by_rule["incremental_retained"]
+                <= by_rule.loc["true_uplift", "incremental_retained"] + 1e-9).all()
     campaign = pd.read_csv(root / "results" / "uplift_campaign_test.csv")
     assert len(campaign) == len(pipeline_run.X_test)
     assert {"treatment", "true_uplift", "predicted_uplift"} <= set(campaign.columns)
+
+
+def test_sensitivity_scenario_only_changes_lost_causes_and_persuadables():
+    main = config.UPLIFT_SCENARIOS["main"]
+    alt = config.UPLIFT_SCENARIOS["sensitivity_high_risk_responds"]
+    assert main is config.UPLIFT_SEGMENT_EFFECTS
+    assert {s for s in main if main[s] != alt[s]} == {"lost_cause", "persuadable"}
+    assert alt["lost_cause"] > alt["persuadable"]

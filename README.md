@@ -183,11 +183,24 @@ Churn risk ranks customers by how likely they are to leave. It says nothing abou
 
 ### Honest reading
 
-- **The size of the gap is built in.** The uplift rule doubles the churn-risk rule's result because the simulation makes the highest-risk group (lost causes) unresponsive. With other assumptions, for example an offer that works best on the riskiest customers, churn risk would be a good proxy for uplift and the gap would shrink or disappear. What the simulation does show is that the T-learner recovers an effect that differs by segment, without being told the segments, from a 50/50 experiment on 5,634 customers.
+- **The size of the gap is built in.** The uplift rule doubles the churn-risk rule's result because the simulation makes the highest-risk group (lost causes) unresponsive. With other assumptions, for example an offer that works best on the riskiest customers, churn risk becomes a good proxy for uplift, and the gap reverses (see the next section). What the simulation does show is that the T-learner recovers an effect that differs by segment, without being told the segments, from a 50/50 experiment on 5,634 customers.
 - **The Qini curve from observed outcomes is very noisy at this size.** On the left panel the curves cross repeatedly, and the observed Qini coefficients barely separate the rules: random ordering 0.0024, churn risk 0.0024, T-learner 0.0030, true uplift 0.0062. With about 700 customers per arm, one random draw of outcomes moves the curve by more than the effect being measured. A real campaign of this size could not reliably tell these rules apart from observed outcomes alone. It would need far more customers or a much stronger offer.
 - **The T-learner still leaves a quarter of the possible gain behind.** It reaches 202 of the 282 persuadables that the budget could cover, and still contacts 31 lost causes.
 
-Run it after training with `python src/uplift/evaluate.py`. It takes about 5 seconds and is also the last step of `run_all.py`.
+### How much depends on the assumptions
+
+To test this, the same comparison is re-run under a **sensitivity scenario** in which the offer works best on the riskiest customers. Lost causes respond strongly (+20 points) and persuadables only weakly (+5 points). Everything else stays the same: segments, sleeping dogs, seeds, treatment assignment and model settings. The effects are `UPLIFT_SENSITIVITY_EFFECTS` in [`src/config.py`](src/config.py), and both scenarios are in [`results/uplift_targeting.csv`](results/uplift_targeting.csv) (column `scenario`).
+
+| Who gets the offer (top 20%) | Main scenario: extra retained | Main: share of best | Sensitivity scenario: extra retained | Sensitivity: share of best |
+|---|---|---|---|---|
+| Random (expected) | 13.8 | 25% | 14.4 | 29% |
+| Highest churn risk | 20.1 | 36% | **39.9** | **82%** |
+| Highest predicted uplift (T-learner) | **40.3** | **73%** | 32.8 | 67% |
+| Highest true uplift (simulation only) | 55.2 | 100% | 48.9 | 100% |
+
+**When risk and uplift line up, the T-learner does not match the churn-risk rule.** It retains 32.8 extra customers against 39.9. It still learns the right direction: it predicts +0.13 for lost causes (true +0.20) and +0.07 for persuadables (true +0.05), and its correlation with the true uplift is 0.50. But its estimate is the difference between two models, each fitted on half the customers, so it is noisy. The churn-risk rule ranks on one well-fitted probability, which in this scenario is also a good guide to who the offer helps. Uplift modelling pays off when the customers most likely to leave are not the ones the offer moves. When they are the same customers, plain churn risk is the better and simpler rule. Only a real randomised campaign can show which case a business is in.
+
+Run it after training with `python src/uplift/evaluate.py`. It runs both scenarios in about 6 seconds and is also the last step of `run_all.py`. The figure shows the main scenario.
 
 ## What the data says
 
@@ -248,7 +261,7 @@ pytest
 
 [GitHub Actions](.github/workflows/ci.yml) runs `ruff check .` and `pytest` on every push to `main` and every pull request into it, on Python 3.11 and 3.12.
 
-The 120 tests run in about 35 seconds. They do not need the Kaggle CSV or network access. They run on a 200-row synthetic dataset (larger synthetic samples for the calibration and uplift checks that compare scores) with the same columns and quirks as the real file, write only to a temporary folder, and never touch `results/` or `models/`. They check:
+The 121 tests run in about 35 seconds. They do not need the Kaggle CSV or network access. They run on a 200-row synthetic dataset (larger synthetic samples for the calibration and uplift checks that compare scores) with the same columns and quirks as the real file, write only to a temporary folder, and never touch `results/` or `models/`. They check:
 
 - **Cleaning and split:** blank `TotalCharges` handling, the 0/1 target, the dropped ID column, the stratified 80/20 proportions, no customer in both sets, and that the same seed gives the same split.
 - **Data validation:** the synthetic data passes the schema; unknown category levels, negative charges, duplicate IDs, inconsistent service columns and unexpected columns are each rejected with the column named in the error.

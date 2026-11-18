@@ -11,6 +11,9 @@ Steps:
   3. on the simulated test customers, compare targeting rules at the same
      budget (top UPLIFT_TARGET_FRACTION contacted), scored with the true effect,
      and draw Qini curves.
+Steps 1-3 run once per scenario in config.UPLIFT_SCENARIOS: the main effects,
+and a sensitivity scenario where the offer works best on the riskiest
+customers. The figure shows the main scenario only.
 
 Run:  python src/uplift/evaluate.py     (after python src/train.py)
 """
@@ -34,7 +37,7 @@ import metrics
 import plotting
 from data import load_train_test
 from uplift.models import TLearner
-from uplift.simulate import segment_summary, simulate
+from uplift.simulate import control_probabilities, segment_summary, simulate_campaign
 
 RULES = {
     "random": "Random",
@@ -135,44 +138,55 @@ def main():
     calibrated = joblib.load(config.MODELS_DIR / "xgboost_calibrated.joblib")
     params = json.loads((config.MODELS_DIR / "metadata.json").read_text())["xgb_best_params"]
 
-    print("[1/3] Simulating the campaign (control-arm churn probability: calibrated "
-          "XGBoost, out-of-fold on training rows)")
-    train_sim, test_sim = simulate(calibrated, X_train, y_train, X_test)
-    for name, sim in (("training", train_sim), ("test", test_sim)):
-        print(f"      {name}: {len(sim)} customers, {sim['treatment'].mean():.1%} treated")
-        print(segment_summary(sim).round(3).to_string(), "\n")
+    print("Control-arm churn probability: calibrated XGBoost, out-of-fold on training rows")
+    p_train, p_test = control_probabilities(calibrated, X_train, y_train, X_test)
     config.RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    segment_summary(test_sim).to_csv(config.RESULTS_DIR / "uplift_segments_test.csv",
-                                     float_format="%.4f")
-
-    print(f"[2/3] T-learner on the simulated training customers (XGBoost {params})")
-    tlearner = TLearner(**params).fit(X_train, train_sim["treatment"], train_sim["churn"])
-    predicted = tlearner.predict_uplift(X_test)
-    pearson = float(pearsonr(predicted, test_sim["true_uplift"]).statistic)
-    spearman = float(spearmanr(predicted, test_sim["true_uplift"]).statistic)
-    print(f"      predicted vs true uplift on test: Pearson {pearson:.3f}, "
-          f"Spearman {spearman:.3f}")
-    by_segment = (test_sim.assign(predicted_uplift=predicted).groupby("segment")
-                  [["true_uplift", "predicted_uplift"]].mean())
-    print(by_segment.round(3).to_string())
-
     fraction = config.UPLIFT_TARGET_FRACTION
-    print(f"[3/3] Targeting rules: top {fraction:.0%} of test customers contacted")
-    scores = targeting_scores(test_sim, predicted, config.UPLIFT_SEED)
-    table = compare_rules(test_sim, scores, fraction)
-    print(table.round(3).to_string(index=False))
-    table["uplift_corr_pearson"] = np.where(table["rule"] == "predicted_uplift", pearson,
-                                            np.nan)
-    table["uplift_corr_spearman"] = np.where(table["rule"] == "predicted_uplift", spearman,
-                                             np.nan)
-    table.to_csv(config.RESULTS_DIR / "uplift_targeting.csv", index=False,
-                 float_format="%.4f")
+    tables = []
+    for scenario, effects in config.UPLIFT_SCENARIOS.items():
+        print(f"\n--- scenario: {scenario} (effects {effects})")
+        # Same seeds in every scenario: identical treatment assignment and random
+        # draws, so only the assumed effects differ.
+        train_sim = simulate_campaign(X_train, p_train, config.UPLIFT_SEED, effects)
+        test_sim = simulate_campaign(X_test, p_test, config.UPLIFT_SEED + 1, effects)
+        print(f"[1/3] Simulated campaign: {train_sim['treatment'].mean():.1%} of training "
+              f"and {test_sim['treatment'].mean():.1%} of test customers treated")
+        print(segment_summary(test_sim).round(3).to_string())
+
+        print(f"[2/3] T-learner on the simulated training customers (XGBoost {params})")
+        tlearner = TLearner(**params).fit(X_train, train_sim["treatment"],
+                                          train_sim["churn"])
+        predicted = tlearner.predict_uplift(X_test)
+        pearson = float(pearsonr(predicted, test_sim["true_uplift"]).statistic)
+        spearman = float(spearmanr(predicted, test_sim["true_uplift"]).statistic)
+        print(f"      predicted vs true uplift on test: Pearson {pearson:.3f}, "
+              f"Spearman {spearman:.3f}")
+        by_segment = (test_sim.assign(predicted_uplift=predicted).groupby("segment")
+                      [["true_uplift", "predicted_uplift"]].mean())
+        print(by_segment.round(3).to_string())
+
+        print(f"[3/3] Targeting rules: top {fraction:.0%} of test customers contacted")
+        scores = targeting_scores(test_sim, predicted, config.UPLIFT_SEED)
+        table = compare_rules(test_sim, scores, fraction)
+        print(table.round(3).to_string(index=False))
+        table.insert(0, "scenario", scenario)
+        is_model = table["rule"] == "predicted_uplift"
+        table["uplift_corr_pearson"] = np.where(is_model, pearson, np.nan)
+        table["uplift_corr_spearman"] = np.where(is_model, spearman, np.nan)
+        tables.append(table)
+
+        if scenario == "main":
+            segment_summary(test_sim).to_csv(
+                config.RESULTS_DIR / "uplift_segments_test.csv", float_format="%.4f")
+            # Per-customer output (row index from the raw file, no features).
+            test_sim.assign(predicted_uplift=predicted).to_csv(
+                config.RESULTS_DIR / "uplift_campaign_test.csv", index_label="row",
+                float_format="%.4f")
+            plot_qini(test_sim, scores, fraction)
+
+    pd.concat(tables, ignore_index=True).to_csv(
+        config.RESULTS_DIR / "uplift_targeting.csv", index=False, float_format="%.4f")
     print(f"  saved {(config.RESULTS_DIR / 'uplift_targeting.csv').relative_to(config.ROOT)}")
-    # Per-customer output (row index from the raw file, no features).
-    test_sim.assign(predicted_uplift=predicted).to_csv(
-        config.RESULTS_DIR / "uplift_campaign_test.csv", index_label="row",
-        float_format="%.4f")
-    plot_qini(test_sim, scores, fraction)
     print(f"  uplift evaluation took {time.perf_counter() - start:.1f} s")
 
 
