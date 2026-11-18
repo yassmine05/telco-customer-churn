@@ -41,7 +41,7 @@ Each dot is one test customer. Position shows how much a feature pushed that cus
 
 SHAP explains the **uncalibrated** booster, so the values add up to its raw score in log-odds, not to the calibrated probability. The calibrated model averages five boosters with an isotonic mapping on top, which SHAP's tree explainer cannot see through. Because calibration barely changes the ordering of customers, the drivers are the same, but the waterfall's end value is the raw score, which runs higher than the probability shown in the app.
 
-> **SHAP shows what the model relies on, not what causes churn.** A month-to-month contract is a strong signal of risk, but that does not prove that moving a customer to an annual contract would make them stay. Proving that needs an experiment (for example an A/B test of the retention offer).
+> **SHAP shows what the model relies on, not what causes churn.** A month-to-month contract is a strong signal of risk, but that does not prove that moving a customer to an annual contract would make them stay. Proving that needs an experiment (for example an A/B test of the retention offer). [Uplift modelling](#uplift-modelling) shows what such an experiment would make possible, on a simulated campaign.
 
 A single customer can be explained the same way. This is the highest-risk customer in the test set (one month of tenure, month-to-month, fiber optic, electronic check):
 
@@ -128,6 +128,80 @@ The cross-validation score of the winning grid-search configuration is biased up
 
 Nested CV only estimates performance. The final model is still tuned by the plain grid search on the full training set, and its threshold still comes from out-of-fold predictions. Per-fold scores and parameters are in [`results/nested_cv_results.csv`](results/nested_cv_results.csv), and the summary is in `models/metadata.json` under `"nested_cv"`.
 
+## Uplift modelling
+
+> **The retention campaign in this section is simulated.** The Telco data records who churned, not who was sent an offer, so there is no treatment to learn from. [`src/uplift/simulate.py`](src/uplift/simulate.py) invents a randomised campaign with a known effect per customer. The numbers below show that the method can recover an effect when one exists. They say nothing about how real customers respond to real offers, and the size of every gap depends on effect sizes that were chosen, not measured.
+
+The churn model answers "who is likely to leave?". A retention budget needs a different question answered: "whose decision will the offer change?". Uplift modelling estimates that second quantity directly:
+
+uplift = P(churn | no offer) − P(churn | offer)
+
+A positive uplift means the offer helps. This is the experiment that the [SHAP caveat](#what-the-model-relies-on) asks for: SHAP shows what the model relies on, not what causes churn, and only a randomised test of the offer can show what the offer causes.
+
+### The simulated campaign
+
+1. **Churn without the offer** is the calibrated XGBoost probability. Training customers get out-of-fold predictions, because the saved model was fitted on them and would be overconfident. Test customers get the saved model's predictions.
+2. **The true effect of the offer** depends on the customer's segment. The rules and effect sizes are in [`src/config.py`](src/config.py); the first matching rule wins:
+
+   | Segment | Rule | True effect | Test customers | Churn without offer |
+   |---|---|---|---|---|
+   | Sure things | two-year contract | 0 | 336 (24%) | 3% |
+   | Sleeping dogs | month-to-month, tenure ≥ 48 months | **−5 points** (offer backfires) | 67 (5%) | 29% |
+   | Lost causes | month-to-month, fiber optic, electronic check | 0 | 232 (16%) | 64% |
+   | Persuadables | month-to-month, tenure ≤ 24 months, no tech support | **+20 points** | 320 (23%) | 39% |
+   | Other | everyone else | +3 points | 454 (32%) | 16% |
+
+   Churn with the offer is the probability without it minus the effect, clipped to [0, 1]. For that reason the persuadables' average effect is 18.5 points, not 20.
+3. **Half the customers, chosen at random, get the offer.** The outcome is drawn from the probability for the arm each customer is in.
+
+A **T-learner** ([`src/uplift/models.py`](src/uplift/models.py)) then fits two copies of the project's XGBoost pipeline on the simulated training customers: one on those who got the offer, one on those who did not. The predicted uplift is the difference between the two predicted probabilities. Class re-weighting is switched off for both copies, because it inflates probabilities by an amount that depends on each arm's churn rate, which would bias the difference.
+
+### Results on the 1,409 test customers
+
+Each rule contacts the same number of customers: the top 20% (282). Because the simulation knows each customer's true effect, "extra customers retained" is the exact expected number (the sum of the true effect over the customers contacted), not an estimate. The figures come from [`results/uplift_targeting.csv`](results/uplift_targeting.csv).
+
+| Who gets the offer (top 20%) | Extra customers retained | Share of the best possible | Lost causes contacted | Persuadables contacted | Sleeping dogs contacted |
+|---|---|---|---|---|---|
+| Random (expected) | 13.8 | 25% | 46 | 64 | 13 |
+| Highest churn risk (current approach) | 20.1 | 36% | 174 | 100 | 2 |
+| **Highest predicted uplift (T-learner)** | **40.3** | **73%** | 31 | 202 | 4 |
+| Highest true uplift (only possible in a simulation) | 55.2 | 100% | 0 | 282 | 0 |
+
+The predicted and true uplift correlate at 0.60 (Pearson; Spearman 0.53). The T-learner's average prediction per segment has the right sign everywhere: +0.13 for persuadables (true +0.18), −0.07 for sleeping dogs (true −0.05), and about 0 for sure things and lost causes.
+
+![Qini curve and exact gain](reports/figures/12_qini_curve.png)
+
+The **left panel** is the Qini curve, which can be computed in a real campaign. After contacting the top k customers, it takes the number of churners you would expect among the treated customers if they had behaved like the controls, and subtracts the number actually seen. The **right panel** uses the true effect, which only a simulation has.
+
+### Why "highest churn risk" is not the same as "most worth contacting"
+
+Churn risk ranks customers by how likely they are to leave. It says nothing about whether the offer will change that.
+
+- **Lost causes** have the highest risk (64% here), so the churn-risk rule spends 174 of its 282 offers on them. In this simulation the offer does not change their outcome, so those offers are wasted.
+- **Sleeping dogs** are harmed by the offer: being reminded that they are free to leave makes some of them go. A rule that contacts them loses customers it would otherwise have kept. Both rules contact few of them here, because they are a small group with moderate risk.
+- **Persuadables** have moderate risk (39%), and the offer works on them. The uplift rule finds twice as many of them as the churn-risk rule, and retains twice as many extra customers (40 against 20).
+
+### Honest reading
+
+- **The size of the gap is built in.** The uplift rule doubles the churn-risk rule's result because the simulation makes the highest-risk group (lost causes) unresponsive. With other assumptions, for example an offer that works best on the riskiest customers, churn risk becomes a good proxy for uplift, and the gap reverses (see the next section). What the simulation does show is that the T-learner recovers an effect that differs by segment, without being told the segments, from a 50/50 experiment on 5,634 customers.
+- **The Qini curve from observed outcomes is very noisy at this size.** On the left panel the curves cross repeatedly, and the observed Qini coefficients barely separate the rules: random ordering 0.0024, churn risk 0.0024, T-learner 0.0030, true uplift 0.0062. With about 700 customers per arm, one random draw of outcomes moves the curve by more than the effect being measured. A real campaign of this size could not reliably tell these rules apart from observed outcomes alone. It would need far more customers or a much stronger offer.
+- **The T-learner still leaves a quarter of the possible gain behind.** It reaches 202 of the 282 persuadables that the budget could cover, and still contacts 31 lost causes.
+
+### How much depends on the assumptions
+
+To test this, the same comparison is re-run under a **sensitivity scenario** in which the offer works best on the riskiest customers. Lost causes respond strongly (+20 points) and persuadables only weakly (+5 points). Everything else stays the same: segments, sleeping dogs, seeds, treatment assignment and model settings. The effects are `UPLIFT_SENSITIVITY_EFFECTS` in [`src/config.py`](src/config.py), and both scenarios are in [`results/uplift_targeting.csv`](results/uplift_targeting.csv) (column `scenario`).
+
+| Who gets the offer (top 20%) | Main scenario: extra retained | Main: share of best | Sensitivity scenario: extra retained | Sensitivity: share of best |
+|---|---|---|---|---|
+| Random (expected) | 13.8 | 25% | 14.4 | 29% |
+| Highest churn risk | 20.1 | 36% | **39.9** | **82%** |
+| Highest predicted uplift (T-learner) | **40.3** | **73%** | 32.8 | 67% |
+| Highest true uplift (simulation only) | 55.2 | 100% | 48.9 | 100% |
+
+**When risk and uplift line up, the T-learner does not match the churn-risk rule.** It retains 32.8 extra customers against 39.9. It still learns the right direction: it predicts +0.13 for lost causes (true +0.20) and +0.07 for persuadables (true +0.05), and its correlation with the true uplift is 0.50. But its estimate is the difference between two models, each fitted on half the customers, so it is noisy. The churn-risk rule ranks on one well-fitted probability, which in this scenario is also a good guide to who the offer helps. Uplift modelling pays off when the customers most likely to leave are not the ones the offer moves. When they are the same customers, plain churn risk is the better and simpler rule. Only a real randomised campaign can show which case a business is in.
+
+Run it after training with `python src/uplift/evaluate.py`. It runs both scenarios in about 6 seconds and is also the last step of `run_all.py`. The figure shows the main scenario.
+
 ## What the data says
 
 From the training set only ([full notes](reports/eda_insights.md)):
@@ -167,7 +241,7 @@ Download `WA_Fn-UseC_-Telco-Customer-Churn.csv` from [Kaggle](https://www.kaggle
 python src/run_all.py
 ```
 
-This runs the EDA, cross-validated training, nested cross-validation, test evaluation and SHAP plots in order (about 7 minutes on a laptop, most of it the 2,500 model fits of nested cross-validation). Figures go to `reports/figures/`, metrics (now including the Brier score) are appended to `results/metrics.csv`, and the ranked customer list is written to `results/ranked_customers_test.csv`. The list is sorted by calibrated probability, with the raw score as a tie-breaker, and flags customers at the calibrated threshold.
+This runs the EDA, cross-validated training, nested cross-validation, test evaluation, SHAP plots and the uplift evaluation on a simulated campaign in order (about 7 minutes on a laptop, most of it the 2,500 model fits of nested cross-validation). Figures go to `reports/figures/`, metrics (now including the Brier score) are appended to `results/metrics.csv`, and the ranked customer list is written to `results/ranked_customers_test.csv`. The list is sorted by calibrated probability, with the raw score as a tie-breaker, and flags customers at the calibrated threshold.
 
 Optional interactive app (enter a customer, get a calibrated churn probability, the action decision at the 0.17 threshold, and a SHAP explanation of the raw score):
 
@@ -187,7 +261,7 @@ pytest
 
 [GitHub Actions](.github/workflows/ci.yml) runs `ruff check .` and `pytest` on every push to `main` and every pull request into it, on Python 3.11 and 3.12.
 
-The 103 tests run in about 35 seconds. They do not need the Kaggle CSV or network access. They run on a 200-row synthetic dataset with the same columns and quirks as the real file, write only to a temporary folder, and never touch `results/` or `models/`. They check:
+The 121 tests run in about 35 seconds. They do not need the Kaggle CSV or network access. They run on a 200-row synthetic dataset (larger synthetic samples for the calibration and uplift checks that compare scores) with the same columns and quirks as the real file, write only to a temporary folder, and never touch `results/` or `models/`. They check:
 
 - **Cleaning and split:** blank `TotalCharges` handling, the 0/1 target, the dropped ID column, the stratified 80/20 proportions, no customer in both sets, and that the same seed gives the same split.
 - **Data validation:** the synthetic data passes the schema; unknown category levels, negative charges, duplicate IDs, inconsistent service columns and unexpected columns are each rejected with the column named in the error.
@@ -195,6 +269,7 @@ The 103 tests run in about 35 seconds. They do not need the Kaggle CSV or networ
 - **Thresholds:** they are chosen from out-of-fold training predictions (recomputed independently and compared, including the calibrated model's), never from test rows, and the minimum-cost choice is verified on hand-built examples.
 - **Calibration:** calibrated probabilities lie in [0, 1], ROC-AUC stays within 0.03 of the raw model, calibration lowers the out-of-fold Brier score on the synthetic data, the chosen method has the lowest Brier score, and the Brier, reliability-bin and 1/6 threshold helpers give known answers on hand-built inputs.
 - **Helpers and models:** the cost function, top-k capture and lift, `scale_pos_weight`, identical predictions across repeat training runs, and SHAP values that add up to the model output.
+- **Uplift (simulated campaign):** the simulation is reproducible with a fixed seed, treats half the customers, gives every segment a treated share near 50%, and clips probabilities to [0, 1]. The control-arm probabilities of training customers are out-of-fold predictions. The T-learner predicts a positive average uplift for persuadables and a negative one for sleeping dogs. The true-uplift ordering has a higher Qini coefficient than random orderings, which score close to 0, and the Qini curve and coefficient match hand-computed examples. Checks that compare model scores use 2,000 to 6,000 synthetic customers and strong effects. Their thresholds were set from a sweep over 100 seed combinations, in which every check passed with a clear margin.
 - **End to end:** an end-to-end run on the synthetic data writes every figure, model and results file.
 - **Published settings:** guards keep the seed, the cost ratio and the 100-combination search grid unchanged, so the published numbers stay reproducible.
 
@@ -211,8 +286,9 @@ The 103 tests run in about 35 seconds. They do not need the Kaggle CSV or networ
 │   ├── train.py           baseline, XGBoost grid search, calibration, cost-based threshold
 │   ├── evaluate.py        one-time test evaluation, gains chart, reliability diagram, ranked list
 │   ├── explain.py         SHAP summary and waterfall plots
-│   ├── metrics.py         metric, cost and calibration helpers
+│   ├── metrics.py         metric, cost, calibration and Qini helpers
 │   ├── plotting.py        shared figure style
+│   ├── uplift/            simulated retention campaign, T-learner, Qini evaluation
 │   └── run_all.py         runs everything in order
 ├── tests/                 pytest suite on synthetic data (see "Running the tests")
 ├── app/streamlit_app.py   interactive demo
@@ -231,6 +307,7 @@ Safeguards against leakage and over-optimistic numbers:
 ## Limitations
 
 - **Single dataset.** One fictional telecom company, one snapshot in time, 7,043 customers. Nothing here shows the model would transfer to another company, market or year. The test set has only 374 churners, so small differences between models are within noise.
+- **The uplift results come from a simulated campaign.** They show the method works when the effect is known. Measuring a real offer's effect needs a real randomised campaign, probably a much larger one (see [Uplift modelling](#uplift-modelling)).
 - **Correlation, not causation.** The model and its SHAP values describe patterns among customers who left. They do not say which interventions would keep a customer. Targeting high-risk customers is only useful if the retention offer actually works on them, which this data cannot tell us.
 - **The threshold depends on business costs.** The 5:1 cost ratio is an illustrative assumption. A real deployment needs the actual cost of an offer, the value of a retained customer, and the offer's success rate.
 - **Calibration is only as good as the data it was fitted on.** The calibrated probabilities match observed churn rates on this test set, but they will drift if the customer base or the churn rate changes, and they should be re-checked (Brier score, reliability diagram) on new data before being quoted to anyone. The raw XGBoost score that SHAP explains is still not a probability.

@@ -21,3 +21,6 @@ desktop.ini
 
 # Per-customer output (contains raw dataset rows; recreated by evaluate.py)
 results/ranked_customers_test.csv
+
+# Per-customer simulated campaign (recreated by src/uplift/evaluate.py)
+results/uplift_campaign_test.csv
