@@ -3,19 +3,28 @@ and the Brier / reliability helpers in metrics.py."""
 import joblib
 import numpy as np
 import pytest
+from scipy.stats import spearmanr
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import StratifiedKFold, cross_val_predict
 
 import config
 import metrics
-from conftest import SMALL_XGB_PARAMS
+from conftest import SMALL_XGB_PARAMS, make_raw_telco
+from data import load_and_clean, split
 from train import CALIBRATION_METHODS, compare_calibration, make_calibrated, make_xgboost
 
 # Isotonic calibration maps ranges of scores to the same probability (ties),
 # and the calibrated model averages 5 boosters fitted on 80% of the rows, so
 # its ranking is close to, but not identical with, the single raw booster.
 AUC_TOLERANCE = 0.03
+MIN_SPEARMAN = 0.9
+
+# Ranking checks need more rows than the shared 200-row fixture: with ~40
+# held-out rows, a few isotonic ties moved ROC-AUC by ~0.04 depending on the
+# package build. On 2,000 rows (400 held out), 20 fixture seeds (2024-2043)
+# gave a worst ROC-AUC gap of 0.008 and a lowest Spearman correlation of 0.985.
+LARGE_N = 2_000
 
 
 @pytest.fixture(scope="module")
@@ -36,6 +45,23 @@ def comparison(xgb_and_data, cv):
     raw_oof = cross_val_predict(xgb, X_train, y_train, cv=cv, method="predict_proba")[:, 1]
     method, scores, oof = compare_calibration(xgb, X_train, y_train, cv)
     return raw_oof, method, scores, oof
+
+
+@pytest.fixture(scope="module")
+def large_xgb_and_data(tmp_path_factory):
+    """Same synthetic generator, 10x the rows, used only for ranking checks."""
+    path = tmp_path_factory.mktemp("large") / "telco_synthetic_large.csv"
+    make_raw_telco(n=LARGE_N, n_churners=int(LARGE_N * 0.27)).to_csv(path, index=False)
+    X_train, X_test, y_train, y_test = split(load_and_clean(path))
+    spw = (y_train == 0).sum() / (y_train == 1).sum()
+    return make_xgboost(spw, **SMALL_XGB_PARAMS), X_train, X_test, y_train, y_test
+
+
+def assert_same_ranking(y, raw, calibrated, label):
+    gap = abs(roc_auc_score(y, calibrated) - roc_auc_score(y, raw))
+    rho = spearmanr(raw, calibrated).statistic
+    assert gap <= AUC_TOLERANCE, f"{label}: ROC-AUC gap {gap:.4f}"
+    assert rho > MIN_SPEARMAN, f"{label}: Spearman {rho:.3f}"
 
 
 # ------------------------------------------------------------ Brier score
@@ -113,21 +139,23 @@ def test_calibrated_probabilities_are_in_0_1(xgb_and_data, cv):
         np.testing.assert_allclose(proba.sum(axis=1), 1.0)
 
 
-def test_calibration_keeps_the_ranking_on_held_out_rows(xgb_and_data, cv):
-    xgb, X_train, X_test, y_train, y_test = xgb_and_data
+def test_calibration_keeps_the_ranking_on_held_out_rows(large_xgb_and_data, cv):
+    xgb, X_train, X_test, y_train, y_test = large_xgb_and_data
+    assert len(X_test) >= 300
     raw = xgb.fit(X_train, y_train).predict_proba(X_test)[:, 1]
     for method in CALIBRATION_METHODS:
         cal = make_calibrated(xgb, method, cv).fit(X_train, y_train).predict_proba(X_test)[:, 1]
-        assert roc_auc_score(y_test, cal) == pytest.approx(roc_auc_score(y_test, raw),
-                                                           abs=AUC_TOLERANCE), method
+        assert_same_ranking(y_test, raw, cal, method)
 
 
-def test_calibration_keeps_the_ranking_out_of_fold(comparison, xgb_and_data):
-    raw_oof, _, _, oof = comparison
-    y_train = xgb_and_data[3]
-    for method, proba in oof.items():
-        assert roc_auc_score(y_train, proba) == pytest.approx(roc_auc_score(y_train, raw_oof),
-                                                              abs=AUC_TOLERANCE), method
+def test_isotonic_keeps_the_ranking_out_of_fold(large_xgb_and_data, cv):
+    # Isotonic only: it is the method that creates ties (sigmoid is strictly
+    # increasing), and running both doubles the cost of this test.
+    xgb, X_train, _, y_train, _ = large_xgb_and_data
+    raw_oof = cross_val_predict(xgb, X_train, y_train, cv=cv, method="predict_proba")[:, 1]
+    cal_oof = cross_val_predict(make_calibrated(xgb, "isotonic", cv), X_train, y_train,
+                                cv=cv, method="predict_proba")[:, 1]
+    assert_same_ranking(y_train, raw_oof, cal_oof, "isotonic")
 
 
 def test_calibration_lowers_out_of_fold_brier_score(comparison, xgb_and_data):
