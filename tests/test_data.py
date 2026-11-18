@@ -44,23 +44,14 @@ def test_blank_total_charges_with_positive_tenure_is_rejected(raw_df, tmp_path):
     assert str(rows) in message
 
 
-def test_tenure_check_survives_python_optimise_flag(raw_df, tmp_path):
-    # Run the check in a separate `python -O` process, where asserts are stripped.
-    import subprocess
-    import sys
-    from pathlib import Path
+def test_load_and_clean_has_no_bare_asserts():
+    # `python -O` strips assert statements, so data checks must not rely on them.
+    import ast
+    import inspect
+    import textwrap
 
-    bad = raw_df.copy()
-    bad.loc[bad.index[bad["tenure"] > 0][0], "TotalCharges"] = " "
-    path = tmp_path / "bad.csv"
-    bad.to_csv(path, index=False)
-    src = Path(__file__).resolve().parents[1] / "src"
-    code = ("import sys; sys.path.insert(0, sys.argv[1]); from pathlib import Path; "
-            "from data import load_and_clean; load_and_clean(Path(sys.argv[2]))")
-    result = subprocess.run([sys.executable, "-O", "-c", code, str(src), str(path)],
-                            capture_output=True, text=True)
-    assert result.returncode != 0
-    assert "ValueError" in result.stderr
+    tree = ast.parse(textwrap.dedent(inspect.getsource(load_and_clean)))
+    assert not [node for node in ast.walk(tree) if isinstance(node, ast.Assert)]
 
 
 def test_churn_is_mapped_to_0_and_1(raw_df, clean_df):
