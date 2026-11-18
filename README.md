@@ -97,6 +97,20 @@ From the training set only ([full notes](reports/eda_insights.md)):
 
 ![Churn by contract](reports/figures/01_churn_by_contract.png)
 
+## Data validation
+
+The raw CSV and every customer scored in the app are checked with [pandera](https://pandera.readthedocs.io/) schemas in [`src/schema.py`](src/schema.py) before anything reaches the model:
+
+- **Category levels:** every categorical column must use one of the levels in the real file (for example `"Yes"`/`"No"`/`"No internet service"`).
+- **Ranges:** `SeniorCitizen` is 0 or 1, `tenure` is an integer from 0 to 100, `MonthlyCharges` is above 0 and below 500, and `TotalCharges` is at least 0 after blanks are filled.
+- **Identity and target:** `customerID` is unique and non-null, and `Churn` is `"Yes"` or `"No"`.
+- **Consistency across columns:** no internet service means all six add-ons are `"No internet service"`, no phone service means `MultipleLines` is `"No phone service"`, and `TotalCharges` is 0 only for customers with zero tenure.
+- **No extra columns**, because the preprocessing would silently drop them.
+
+Why it matters: the one-hot encoder uses `drop="if_binary"` with `handle_unknown="ignore"`, so an unknown value in a two-level column such as `gender="Unknown"` would be encoded exactly like `"Female"` and scored without any warning. Validation rejects such rows instead.
+
+`data.load_and_clean` uses the raw-file schema and reports every failure at once, with the column, the check and example rows. The Streamlit app uses an inference schema (no `Churn`, `customerID` optional) and shows an error instead of a score if the input fails. The real Kaggle file passes all checks with no rows flagged.
+
 ## How to run it
 
 ```bash
@@ -131,9 +145,10 @@ pytest
 
 [GitHub Actions](.github/workflows/ci.yml) runs `ruff check .` and `pytest` on every push to `main` and every pull request into it, on Python 3.11 and 3.12.
 
-The 68 tests run in about 15 seconds. They do not need the Kaggle CSV or network access. They run on a 200-row synthetic dataset with the same columns and quirks as the real file, write only to a temporary folder, and never touch `results/` or `models/`. They check:
+The 84 tests run in about 25 seconds. They do not need the Kaggle CSV or network access. They run on a 200-row synthetic dataset with the same columns and quirks as the real file, write only to a temporary folder, and never touch `results/` or `models/`. They check:
 
 - **Cleaning and split:** blank `TotalCharges` handling, the 0/1 target, the dropped ID column, the stratified 80/20 proportions, no customer in both sets, and that the same seed gives the same split.
+- **Data validation:** the synthetic data passes the schema; unknown category levels, negative charges, duplicate IDs, inconsistent service columns and unexpected columns are each rejected with the column named in the error.
 - **Leakage:** preprocessing is fitted inside the pipeline on training rows only, and the EDA, training and SHAP steps never read the test labels. The training and EDA steps also never read the test features. Any access fails the run.
 - **Thresholds:** they are chosen from out-of-fold training predictions (recomputed independently and compared), and the minimum-cost choice is verified on hand-built examples.
 - **Helpers and models:** the cost function, top-k capture and lift, `scale_pos_weight`, identical predictions across repeat training runs, and SHAP values that add up to the model output.
@@ -148,6 +163,7 @@ The 68 tests run in about 15 seconds. They do not need the Kaggle CSV or network
 ├── src/
 │   ├── config.py          paths, seed, feature lists, cost assumption, search grid
 │   ├── data.py            load, clean, stratified 80/20 split
+│   ├── schema.py          pandera schemas for the raw file and for scoring
 │   ├── eda.py             EDA figures and insights
 │   ├── train.py           baseline, XGBoost grid search, cost-based threshold
 │   ├── evaluate.py        one-time test evaluation, gains chart, ranked list
