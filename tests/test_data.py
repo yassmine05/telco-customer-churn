@@ -102,7 +102,7 @@ def test_no_customer_in_both_train_and_test(split_data, raw_df):
 
 def test_same_seed_gives_same_split(clean_df):
     first, second = split(clean_df), split(clean_df)
-    for a, b in zip(first, second):
+    for a, b in zip(first, second, strict=True):
         assert a.index.equals(b.index)
 
 

@@ -25,7 +25,7 @@ COLOURS = {"baseline_logreg": plotting.ORANGE, "xgboost": plotting.BLUE}
 def plot_confusion_matrices(y, probas, thresholds):
     """Side-by-side confusion matrices at each model's cost-based threshold."""
     fig, axes = plt.subplots(1, 2, figsize=(9, 4))
-    for ax, name in zip(axes, MODELS):
+    for ax, name in zip(axes, MODELS, strict=True):
         m = metrics.classification_metrics(y, probas[name], thresholds[name])
         grid = np.array([[m["tn"], m["fp"]], [m["fn"], m["tp"]]])
         ax.imshow(grid, cmap="Blues", vmin=0, vmax=grid.max() * 1.25)

@@ -3,8 +3,13 @@ from datetime import datetime
 
 import numpy as np
 import pandas as pd
-from sklearn.metrics import (average_precision_score, confusion_matrix,
-                             precision_score, recall_score, roc_auc_score)
+from sklearn.metrics import (
+    average_precision_score,
+    confusion_matrix,
+    precision_score,
+    recall_score,
+    roc_auc_score,
+)
 
 import config
 

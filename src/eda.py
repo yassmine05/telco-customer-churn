@@ -35,7 +35,7 @@ def bar_chart(table: pd.DataFrame, title: str, overall_pct: float, filename: str
         ax.set_xlabel("Churn rate (%)")
         ax.grid(axis="y", visible=False)
         ax.set_xlim(0, max(values) * 1.18)
-        for bar, v, n in zip(bars, values, table["customers"]):
+        for bar, v, n in zip(bars, values, table["customers"], strict=True):
             ax.text(v + 0.6, bar.get_y() + bar.get_height() / 2,
                     f"{v:.1f}%  (n={n:,})", va="center", fontsize=9.5,
                     # surface-coloured box so the dashed reference line never
@@ -51,7 +51,7 @@ def bar_chart(table: pd.DataFrame, title: str, overall_pct: float, filename: str
             ax.set_xlabel(xlabel)
         ax.grid(axis="x", visible=False)
         ax.set_ylim(0, max(values) * 1.18)
-        for bar, v, n in zip(bars, values, table["customers"]):
+        for bar, v, n in zip(bars, values, table["customers"], strict=True):
             ax.text(bar.get_x() + bar.get_width() / 2, v + 0.8,
                     f"{v:.1f}%\nn={n:,}", ha="center", fontsize=9.5)
     ax.set_title(title)

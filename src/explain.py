@@ -30,6 +30,7 @@ def explain(pipeline, X: pd.DataFrame) -> shap.Explanation:
 
 
 def main():
+    plotting.apply_style()
     _, X_test, _, _ = load_train_test()   # features only; labels are not used
     pipeline = joblib.load(config.MODELS_DIR / "xgboost.joblib")
     explanation = explain(pipeline, X_test)

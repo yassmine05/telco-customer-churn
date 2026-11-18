@@ -64,7 +64,7 @@ def make_raw_telco(n=N_ROWS, n_churners=N_CHURNERS, seed=FIXTURE_SEED) -> pd.Dat
     monthly = np.round(np.clip(monthly, 18.25, 118.75), 2)
     # Text column, blank (" ") for customers who have not been billed yet,
     # exactly like the real file.
-    total = [" " if t == 0 else str(round(m * t, 2)) for m, t in zip(monthly, tenure)]
+    total = [" " if t == 0 else str(round(m * t, 2)) for m, t in zip(monthly, tenure, strict=True)]
 
     senior = (rng.random(n) < 0.16).astype(int)
     risk = (1.5 * (contract == "Month-to-month") + 1.0 * (internet == "Fiber optic")
