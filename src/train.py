@@ -5,6 +5,8 @@ Everything in this file uses the TRAINING set only:
     it is re-fitted on each training fold (no leakage into the validation fold);
   * hyperparameters are chosen by 5-fold stratified cross-validation;
   * the decision threshold is chosen from out-of-fold predictions;
+  * the tuned XGBoost model is calibrated (isotonic or sigmoid, chosen by
+    out-of-fold Brier score), because scale_pos_weight inflates its scores;
   * nested cross-validation (an outer loop around the whole tuning procedure)
     gives an unbiased performance estimate. It only reports a score: the final
     model and threshold are chosen exactly as above.
@@ -19,9 +21,10 @@ import joblib
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from sklearn.calibration import CalibratedClassifierCV
 from sklearn.compose import ColumnTransformer
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import average_precision_score, roc_auc_score
+from sklearn.metrics import average_precision_score, log_loss, roc_auc_score
 from sklearn.model_selection import GridSearchCV, StratifiedKFold, cross_val_predict
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
@@ -73,6 +76,39 @@ def make_xgboost(scale_pos_weight: float, **params) -> Pipeline:
             **params,
         )),
     ])
+
+
+CALIBRATION_METHODS = ("isotonic", "sigmoid")
+
+
+def make_calibrated(estimator, method: str, cv) -> CalibratedClassifierCV:
+    """Wrap `estimator` in a calibrator fitted by internal cross-validation.
+
+    For each of the cv folds, a copy of the pipeline is fitted on the other
+    folds and the score -> probability mapping is learnt on the held-out fold.
+    predict_proba averages the calibrated copies.
+    """
+    return CalibratedClassifierCV(estimator, method=method, cv=cv)
+
+
+def compare_calibration(estimator, X, y, cv) -> tuple[str, dict, dict]:
+    """Out-of-fold comparison of the calibration methods on the training set.
+
+    The outer cross_val_predict and the calibrator's inner cv use the same
+    seeded splitter, so a calibrator never sees the rows it is scored on.
+    Lower Brier score wins; log loss breaks a tie and is reported alongside.
+    Returns (chosen method, scores per method, out-of-fold probas per method).
+    """
+    oof, scores = {}, {}
+    for method in CALIBRATION_METHODS:
+        proba = cross_val_predict(make_calibrated(estimator, method, cv), X, y,
+                                  cv=cv, method="predict_proba")[:, 1]
+        oof[method] = proba
+        scores[method] = {"brier": metrics.brier_score(y, proba),
+                          "log_loss": float(log_loss(y, proba))}
+    chosen = min(CALIBRATION_METHODS,
+                 key=lambda m: (scores[m]["brier"], scores[m]["log_loss"]))
+    return chosen, scores, oof
 
 
 def make_search(scale_pos_weight: float, cv) -> GridSearchCV:
@@ -139,18 +175,26 @@ def summarise_nested_cv(table: pd.DataFrame) -> dict:
 def plot_cost_curves(y, oof: dict, thresholds: dict):
     """Expected cost vs threshold for both models (out-of-fold, training set)."""
     fig, ax = plt.subplots(figsize=(7.5, 4.4))
-    colours = {"baseline_logreg": plotting.ORANGE, "xgboost": plotting.BLUE}
-    labels = {"baseline_logreg": "Logistic regression", "xgboost": "XGBoost"}
-    for name, proba in oof.items():
+    colours = {"baseline_logreg": plotting.ORANGE, "xgboost": plotting.BLUE,
+               "xgboost_calibrated": plotting.GREEN}
+    labels = {"baseline_logreg": "Logistic regression", "xgboost": "XGBoost (raw score)",
+              "xgboost_calibrated": "XGBoost (calibrated)"}
+    for i, (name, proba) in enumerate(oof.items()):
         grid, costs = metrics.cost_curve(y, proba)
         ax.plot(grid, costs, color=colours[name], label=labels[name])
         t = thresholds[name]
         c = metrics.expected_cost(y, proba, t)
         ax.scatter([t], [c], s=60, color=colours[name], edgecolor=plotting.SURFACE,
                    linewidth=2, zorder=3)
+        # Stagger the labels: two models can share the same minimum.
         ax.annotate(f"min at {t:.2f}", (t, c), textcoords="offset points",
-                    xytext=(0, -16), ha="center", fontsize=9.5)
+                    xytext=(0, -16 - 14 * i), ha="center", fontsize=9.5,
+                    color=colours[name])
     ax.set_ylim(0, None)
+    bayes = metrics.bayes_threshold()
+    ax.axvline(bayes, color=plotting.GREEN, ls=":", lw=1.2)
+    ax.text(bayes + 0.01, ax.get_ylim()[1] * 0.04, f"theory {bayes:.3f}",
+            color=plotting.INK_SOFT, fontsize=9)
     ax.axvline(0.5, color=plotting.GREY, ls="--", lw=1.2)
     ax.text(0.51, ax.get_ylim()[1] * 0.97, "default 0.50", color=plotting.INK_SOFT,
             fontsize=9, va="top")
@@ -169,7 +213,7 @@ def main():
                          random_state=config.SEED)
 
     # ---------------------------------------------------------------- baseline
-    print("[1/4] Baseline: one-hot + logistic regression")
+    print("[1/5] Baseline: one-hot + logistic regression")
     baseline = make_baseline()
     oof_base = cross_val_predict(baseline, X_train, y_train, cv=cv,
                                  method="predict_proba")[:, 1]
@@ -178,7 +222,7 @@ def main():
     n_neg, n_pos = int((y_train == 0).sum()), int((y_train == 1).sum())
     spw = n_neg / n_pos
     n_combos = int(np.prod([len(v) for v in config.XGB_PARAM_GRID.values()]))
-    print(f"[2/4] XGBoost: scale_pos_weight = {n_neg}/{n_pos} = {spw:.3f}; "
+    print(f"[2/5] XGBoost: scale_pos_weight = {n_neg}/{n_pos} = {spw:.3f}; "
           f"grid search over {n_combos} combinations x {config.CV_FOLDS} folds")
     search = make_search(spw, cv)
     search.fit(X_train, y_train)
@@ -199,11 +243,27 @@ def main():
     oof_xgb = cross_val_predict(xgb, X_train, y_train, cv=cv,
                                 method="predict_proba")[:, 1]
 
+    # ------------------------------------------------------------- calibration
+    print(f"[3/5] Calibrating XGBoost ({', '.join(CALIBRATION_METHODS)}; "
+          f"cv={config.CV_FOLDS} inside the calibrator, scored out-of-fold)")
+    method, cal_scores, cal_oof = compare_calibration(xgb, X_train, y_train, cv)
+    cal_scores = {"uncalibrated": {"brier": metrics.brier_score(y_train, oof_xgb),
+                                   "log_loss": float(log_loss(y_train, oof_xgb))},
+                  **cal_scores}
+    for name, sc in cal_scores.items():
+        print(f"      {name:>12}: Brier {sc['brier']:.4f}, log loss {sc['log_loss']:.4f}")
+    print(f"      chosen: {method}")
+    oof_cal = cal_oof[method]
+
     # ------------------------------------------------- cost-based thresholds
-    print("[3/4] Choosing decision thresholds from out-of-fold predictions")
-    oof = {"baseline_logreg": oof_base, "xgboost": oof_xgb}
+    print("[4/5] Choosing decision thresholds from out-of-fold predictions")
+    oof = {"baseline_logreg": oof_base, "xgboost": oof_xgb, "xgboost_calibrated": oof_cal}
     thresholds = {name: metrics.best_cost_threshold(y_train, p)
                   for name, p in oof.items()}
+    bayes = metrics.bayes_threshold()
+    print(f"      calibrated XGBoost: empirical best threshold "
+          f"{thresholds['xgboost_calibrated']:.2f}, theoretical "
+          f"C_FP / (C_FP + C_FN) = {bayes:.3f}")
     plot_cost_curves(y_train, oof, thresholds)
 
     rows = []
@@ -212,23 +272,29 @@ def main():
             m = metrics.classification_metrics(y_train, proba, t)
             rows.append({"model": name, "data": "train_cv_out_of_fold",
                          "threshold_rule": rule, **m,
+                         "brier": metrics.brier_score(y_train, proba),
                          "top10_capture": metrics.capture_at_top(y_train, proba, 0.10)["capture"],
                          "top20_capture": metrics.capture_at_top(y_train, proba, 0.20)["capture"],
-                         "params": json.dumps(best_params) if name == "xgboost" else "{}"})
+                         "params": "{}" if name == "baseline_logreg" else json.dumps(best_params)})
     metrics.log_metrics(rows)
     print(pd.DataFrame(rows)[["model", "threshold_rule", "threshold", "precision",
-                              "recall", "roc_auc", "pr_auc"]].round(4).to_string(index=False))
+                              "recall", "roc_auc", "pr_auc", "brier"]]
+          .round(4).to_string(index=False))
 
     # ------------------------------------------- fit final models on all train
     config.MODELS_DIR.mkdir(parents=True, exist_ok=True)
     joblib.dump(baseline.fit(X_train, y_train), config.MODELS_DIR / "baseline_logreg.joblib")
     joblib.dump(xgb.fit(X_train, y_train), config.MODELS_DIR / "xgboost.joblib")
+    # The calibrator clones and refits its own copies of the pipeline, so the
+    # booster saved above (the one SHAP explains) is left as it is.
+    joblib.dump(make_calibrated(xgb, method, cv).fit(X_train, y_train),
+                config.MODELS_DIR / "xgboost_calibrated.joblib")
 
     # ---------------------------------------------- nested CV (estimate only)
     # Runs after the final models are fitted and saved, and only writes its own
     # outputs, so it cannot change the final model or threshold.
     n_outer_fits = config.OUTER_CV_FOLDS * (n_combos * config.CV_FOLDS + 1)
-    print(f"[4/4] Nested CV: {config.OUTER_CV_FOLDS} outer x {config.CV_FOLDS} inner folds, "
+    print(f"[5/5] Nested CV: {config.OUTER_CV_FOLDS} outer x {config.CV_FOLDS} inner folds, "
           f"{n_combos} combinations ({n_outer_fits} XGBoost fits)")
     nested = nested_cv(X_train, y_train)
     nested.to_csv(config.RESULTS_DIR / "nested_cv_results.csv", index=False,
@@ -246,10 +312,19 @@ def main():
         "cost_false_positive": config.COST_FALSE_POSITIVE,
         "cv_roc_auc": {r["model"]: r["roc_auc"] for r in rows},
         "cv_pr_auc": {r["model"]: r["pr_auc"] for r in rows},
+        "calibration": {
+            "method": method,
+            "cv_folds": config.CV_FOLDS,
+            "selection": "lowest out-of-fold Brier score (log loss breaks ties)",
+            "oof_scores": cal_scores,
+            "theoretical_threshold": bayes,
+            "empirical_threshold": thresholds["xgboost_calibrated"],
+        },
         "nested_cv": summarise_nested_cv(nested),
     }
     (config.MODELS_DIR / "metadata.json").write_text(json.dumps(meta, indent=2))
-    print("  saved models/ (baseline_logreg.joblib, xgboost.joblib, metadata.json)")
+    print("  saved models/ (baseline_logreg.joblib, xgboost.joblib, "
+          "xgboost_calibrated.joblib, metadata.json)")
 
 
 if __name__ == "__main__":

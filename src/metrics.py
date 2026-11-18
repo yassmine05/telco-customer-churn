@@ -3,8 +3,10 @@ from datetime import datetime
 
 import numpy as np
 import pandas as pd
+from sklearn.calibration import calibration_curve
 from sklearn.metrics import (
     average_precision_score,
+    brier_score_loss,
     confusion_matrix,
     precision_score,
     recall_score,
@@ -49,6 +51,36 @@ def best_cost_threshold(y_true, proba) -> float:
     return float(grid[int(np.argmin(costs))])
 
 
+def bayes_threshold() -> float:
+    """Cost-optimal threshold for a perfectly calibrated probability p.
+
+    Flagging costs (1 - p) * C_FP in expectation, not flagging costs p * C_FN,
+    so flag when p > C_FP / (C_FP + C_FN).
+    """
+    return config.COST_FALSE_POSITIVE / (config.COST_FALSE_POSITIVE
+                                         + config.COST_FALSE_NEGATIVE)
+
+
+def brier_score(y_true, proba) -> float:
+    """Mean squared error between predicted probability and the 0/1 outcome.
+
+    0 is perfect; always predicting the churn rate r scores r * (1 - r).
+    """
+    return float(brier_score_loss(np.asarray(y_true), np.asarray(proba)))
+
+
+def calibration_bins(y_true, proba, n_bins: int = 10) -> pd.DataFrame:
+    """Reliability-diagram points: mean predicted probability vs observed churn
+    rate in `n_bins` equal-count (quantile) bins.
+
+    Bins whose edges coincide, which happens when isotonic calibration produces
+    tied scores, are merged, so fewer than `n_bins` rows can come back.
+    """
+    observed, predicted = calibration_curve(np.asarray(y_true), np.asarray(proba),
+                                            n_bins=n_bins, strategy="quantile")
+    return pd.DataFrame({"mean_predicted": predicted, "observed_rate": observed})
+
+
 def capture_at_top(y_true, proba, fraction: float) -> dict:
     """If we contact only the riskiest `fraction` of customers, how many of all
     churners do we reach (capture), and how much better is that than random (lift)?"""
@@ -66,6 +98,16 @@ def log_metrics(rows: list[dict]):
     config.RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     df = pd.DataFrame([{"run_time": stamp, "seed": config.SEED, **r} for r in rows])
-    df.to_csv(config.METRICS_PATH, mode="a", index=False,
-              header=not config.METRICS_PATH.exists(), float_format="%.4f")
+    path = config.METRICS_PATH
+    if path.exists():
+        columns = list(pd.read_csv(path, nrows=0).columns)
+        new = [c for c in df.columns if c not in columns]
+        if new:
+            # A metric column was added since the file was written: rewrite it
+            # with the extra columns (blank for older rows) so rows stay aligned.
+            old = pd.read_csv(path, dtype=str, keep_default_na=False)
+            columns += new
+            old.reindex(columns=columns, fill_value="").to_csv(path, index=False)
+        df = df.reindex(columns=columns)
+    df.to_csv(path, mode="a", index=False, header=not path.exists(), float_format="%.4f")
     print(f"  logged {len(df)} row(s) to {config.METRICS_PATH.relative_to(config.ROOT)}")

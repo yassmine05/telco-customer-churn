@@ -1,5 +1,5 @@
-"""Minimal Streamlit app: enter one customer's details, get a churn risk score
-and a SHAP explanation.
+"""Minimal Streamlit app: enter one customer's details, get a calibrated churn
+probability and a SHAP explanation of the underlying model score.
 
 Run:  streamlit run app/streamlit_app.py     (after python src/run_all.py)
 """
@@ -21,22 +21,27 @@ from schema import INFERENCE_SCHEMA, DataValidationError, validate  # noqa: E402
 st.set_page_config(page_title="Telco churn risk", layout="wide")
 
 
+MODEL_FILES = ["xgboost.joblib", "xgboost_calibrated.joblib", "metadata.json"]
+
+
 @st.cache_resource
-def load_model():
+def load_models():
+    # The raw booster is kept for SHAP; the calibrated model gives the probability.
     pipeline = joblib.load(config.MODELS_DIR / "xgboost.joblib")
+    calibrated = joblib.load(config.MODELS_DIR / "xgboost_calibrated.joblib")
     meta = json.loads((config.MODELS_DIR / "metadata.json").read_text())
-    return pipeline, meta
+    return pipeline, calibrated, meta
 
 
-if not (config.MODELS_DIR / "xgboost.joblib").exists():
+if not all((config.MODELS_DIR / f).exists() for f in MODEL_FILES):
     st.error("No trained model found. Run `python src/run_all.py` first.")
     st.stop()
 
-pipeline, meta = load_model()
-threshold = meta["thresholds"]["xgboost"]
+pipeline, calibrated, meta = load_models()
+threshold = meta["thresholds"]["xgboost_calibrated"]
 
 st.title("Telco churn risk")
-st.caption("Enter a customer's details to get the model's churn risk score and "
+st.caption("Enter a customer's details to get the model's churn probability and "
            "the factors behind it.")
 
 # ------------------------------------------------------------------ inputs
@@ -92,24 +97,27 @@ except DataValidationError as error:
              + str(error))
     st.stop()
 
-score = float(pipeline.predict_proba(customer)[0, 1])
-flagged = score >= threshold
+probability = float(calibrated.predict_proba(customer)[0, 1])
+raw_score = float(pipeline.predict_proba(customer)[0, 1])
+flagged = probability >= threshold
 
 left, right = st.columns([1, 2])
 with left:
-    st.metric("Churn risk score", f"{score:.0%}")
+    st.metric("Churn probability", f"{probability:.0%}")
     if flagged:
         st.warning(f"Above the action threshold ({threshold:.2f}): "
                    "candidate for a retention offer.")
     else:
         st.success(f"Below the action threshold ({threshold:.2f}): no offer.")
     st.caption(
-        "The score ranks customers by risk. It is not a calibrated probability: "
-        "the model up-weights churners during training, so scores run higher "
-        "than true churn rates.")
+        f"Calibrated ({meta['calibration']['method']}) on the training set: among "
+        "customers given this probability, roughly that share churned. The "
+        f"threshold is where a {config.COST_FALSE_NEGATIVE:g}:"
+        f"{config.COST_FALSE_POSITIVE:g} cost of a missed churner vs a wasted "
+        "offer is lowest.")
 
 with right:
-    st.subheader("What drives this score")
+    st.subheader("What drives the model's raw score")
     explanation = explain(pipeline, customer)
     plt.figure()
     shap.plots.waterfall(explanation[0], max_display=10, show=False)
@@ -117,5 +125,7 @@ with right:
     fig.set_size_inches(8, 4.8)
     st.pyplot(fig, clear_figure=True)
     st.caption(
-        "Red bars push the score up, blue bars push it down (units: log-odds). "
-        "SHAP shows what the model relies on, not what causes churn.")
+        f"Red bars push the score up, blue bars push it down (units: log-odds). "
+        f"This explains the uncalibrated model's raw score ({raw_score:.0%}), "
+        "not the calibrated probability; the two rank customers almost the same "
+        "way. SHAP shows what the model relies on, not what causes churn.")
