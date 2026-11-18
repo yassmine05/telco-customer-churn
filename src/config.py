@@ -14,6 +14,9 @@ MODELS_DIR = ROOT / "models"
 SEED = 42
 TEST_SIZE = 0.20
 CV_FOLDS = 5
+# Nested CV: outer folds estimate performance; inner folds (CV_FOLDS) tune.
+# The outer splitter uses SEED + 1 so its folds differ from the inner ones.
+OUTER_CV_FOLDS = 5
 
 # --- Columns -----------------------------------------------------------------
 TARGET = "Churn"

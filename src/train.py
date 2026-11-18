@@ -4,7 +4,10 @@ Everything in this file uses the TRAINING set only:
   * preprocessing lives inside a scikit-learn Pipeline, so in cross-validation
     it is re-fitted on each training fold (no leakage into the validation fold);
   * hyperparameters are chosen by 5-fold stratified cross-validation;
-  * the decision threshold is chosen from out-of-fold predictions.
+  * the decision threshold is chosen from out-of-fold predictions;
+  * nested cross-validation (an outer loop around the whole tuning procedure)
+    gives an unbiased performance estimate. It only reports a score: the final
+    model and threshold are chosen exactly as above.
 
 The test set is not touched here. See evaluate.py.
 
@@ -18,6 +21,7 @@ import numpy as np
 import pandas as pd
 from sklearn.compose import ColumnTransformer
 from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import average_precision_score, roc_auc_score
 from sklearn.model_selection import (GridSearchCV, StratifiedKFold,
                                      cross_val_predict)
 from sklearn.pipeline import Pipeline
@@ -72,6 +76,67 @@ def make_xgboost(scale_pos_weight: float, **params) -> Pipeline:
     ])
 
 
+def make_search(scale_pos_weight: float, cv) -> GridSearchCV:
+    """The XGBoost hyperparameter search, used both for the final model and
+    inside each outer fold of the nested cross-validation."""
+    return GridSearchCV(
+        make_xgboost(scale_pos_weight),
+        config.XGB_PARAM_GRID,
+        scoring={"roc_auc": "roc_auc", "pr_auc": "average_precision"},
+        refit="pr_auc",        # select on PR-AUC: it focuses on the churn class
+        cv=cv,
+        n_jobs=-1,
+    )
+
+
+def nested_cv(X, y) -> pd.DataFrame:
+    """Nested cross-validation on the training set.
+
+    For each outer fold, the complete tuning procedure (scale_pos_weight +
+    inner grid search) runs on the outer-training part only, and the refitted
+    best model is scored on the outer-validation part, which the search never
+    sees. The baseline has no hyperparameters, so it is simply fitted on the
+    outer-training part and scored on the same outer-validation part.
+
+    The outer loop is sequential; only the inner GridSearchCV runs in parallel.
+    Returns one row per outer fold per model.
+    """
+    outer = StratifiedKFold(n_splits=config.OUTER_CV_FOLDS, shuffle=True,
+                            random_state=config.SEED + 1)
+    inner = StratifiedKFold(n_splits=config.CV_FOLDS, shuffle=True,
+                            random_state=config.SEED)
+    rows = []
+    for fold, (tr, va) in enumerate(outer.split(X, y), start=1):
+        X_tr, X_va, y_tr, y_va = X.iloc[tr], X.iloc[va], y.iloc[tr], y.iloc[va]
+        spw = int((y_tr == 0).sum()) / int((y_tr == 1).sum())
+        search = make_search(spw, inner).fit(X_tr, y_tr)
+        params = {k.replace("model__", ""): v for k, v in search.best_params_.items()}
+        fitted = {"baseline_logreg": make_baseline().fit(X_tr, y_tr),
+                  "xgboost": search.best_estimator_}
+        for name, model in fitted.items():
+            proba = model.predict_proba(X_va)[:, 1]
+            rows.append({"fold": fold, "model": name,
+                         "roc_auc": roc_auc_score(y_va, proba),
+                         "pr_auc": average_precision_score(y_va, proba),
+                         "best_params": json.dumps(params) if name == "xgboost" else "{}"})
+        print(f"      outer fold {fold}/{config.OUTER_CV_FOLDS}: XGBoost ROC-AUC "
+              f"{rows[-1]['roc_auc']:.4f}, PR-AUC {rows[-1]['pr_auc']:.4f}, "
+              f"baseline ROC-AUC {rows[-2]['roc_auc']:.4f}, PR-AUC {rows[-2]['pr_auc']:.4f}; "
+              f"params {params}", flush=True)
+    return pd.DataFrame(rows)
+
+
+def summarise_nested_cv(table: pd.DataFrame) -> dict:
+    """Mean and sample standard deviation (ddof=1) per model, plus params per fold."""
+    summary = {"outer_folds": config.OUTER_CV_FOLDS, "inner_folds": config.CV_FOLDS}
+    for name, group in table.groupby("model"):
+        summary[name] = {f"{m}_{stat}": float(getattr(group[m], stat)())
+                         for m in ("roc_auc", "pr_auc") for stat in ("mean", "std")}
+    xgb = table[table["model"] == "xgboost"]
+    summary["xgb_params_by_fold"] = [json.loads(p) for p in xgb["best_params"]]
+    return summary
+
+
 def plot_cost_curves(y, oof: dict, thresholds: dict):
     """Expected cost vs threshold for both models (out-of-fold, training set)."""
     fig, ax = plt.subplots(figsize=(7.5, 4.4))
@@ -105,7 +170,7 @@ def main():
                          random_state=config.SEED)
 
     # ---------------------------------------------------------------- baseline
-    print("[1/3] Baseline: one-hot + logistic regression")
+    print("[1/4] Baseline: one-hot + logistic regression")
     baseline = make_baseline()
     oof_base = cross_val_predict(baseline, X_train, y_train, cv=cv,
                                  method="predict_proba")[:, 1]
@@ -114,16 +179,9 @@ def main():
     n_neg, n_pos = int((y_train == 0).sum()), int((y_train == 1).sum())
     spw = n_neg / n_pos
     n_combos = int(np.prod([len(v) for v in config.XGB_PARAM_GRID.values()]))
-    print(f"[2/3] XGBoost: scale_pos_weight = {n_neg}/{n_pos} = {spw:.3f}; "
+    print(f"[2/4] XGBoost: scale_pos_weight = {n_neg}/{n_pos} = {spw:.3f}; "
           f"grid search over {n_combos} combinations x {config.CV_FOLDS} folds")
-    search = GridSearchCV(
-        make_xgboost(spw),
-        config.XGB_PARAM_GRID,
-        scoring={"roc_auc": "roc_auc", "pr_auc": "average_precision"},
-        refit="pr_auc",        # select on PR-AUC: it focuses on the churn class
-        cv=cv,
-        n_jobs=-1,
-    )
+    search = make_search(spw, cv)
     search.fit(X_train, y_train)
     best_params = {k.replace("model__", ""): v for k, v in search.best_params_.items()}
     print(f"      best params: {best_params}")
@@ -143,7 +201,7 @@ def main():
                                 method="predict_proba")[:, 1]
 
     # ------------------------------------------------- cost-based thresholds
-    print("[3/3] Choosing decision thresholds from out-of-fold predictions")
+    print("[3/4] Choosing decision thresholds from out-of-fold predictions")
     oof = {"baseline_logreg": oof_base, "xgboost": oof_xgb}
     thresholds = {name: metrics.best_cost_threshold(y_train, p)
                   for name, p in oof.items()}
@@ -166,6 +224,20 @@ def main():
     config.MODELS_DIR.mkdir(parents=True, exist_ok=True)
     joblib.dump(baseline.fit(X_train, y_train), config.MODELS_DIR / "baseline_logreg.joblib")
     joblib.dump(xgb.fit(X_train, y_train), config.MODELS_DIR / "xgboost.joblib")
+
+    # ---------------------------------------------- nested CV (estimate only)
+    # Runs after the final models are fitted and saved, and only writes its own
+    # outputs, so it cannot change the final model or threshold.
+    n_outer_fits = config.OUTER_CV_FOLDS * (n_combos * config.CV_FOLDS + 1)
+    print(f"[4/4] Nested CV: {config.OUTER_CV_FOLDS} outer x {config.CV_FOLDS} inner folds, "
+          f"{n_combos} combinations ({n_outer_fits} XGBoost fits)")
+    nested = nested_cv(X_train, y_train)
+    nested.to_csv(config.RESULTS_DIR / "nested_cv_results.csv", index=False,
+                  float_format="%.5f")
+    print(f"  saved {(config.RESULTS_DIR / 'nested_cv_results.csv').relative_to(config.ROOT)}")
+    print(nested.groupby("model")[["roc_auc", "pr_auc"]].agg(["mean", "std"]).round(4)
+          .to_string())
+
     meta = {
         "seed": config.SEED,
         "scale_pos_weight": spw,
@@ -175,6 +247,7 @@ def main():
         "cost_false_positive": config.COST_FALSE_POSITIVE,
         "cv_roc_auc": {r["model"]: r["roc_auc"] for r in rows},
         "cv_pr_auc": {r["model"]: r["pr_auc"] for r in rows},
+        "nested_cv": summarise_nested_cv(nested),
     }
     (config.MODELS_DIR / "metadata.json").write_text(json.dumps(meta, indent=2))
     print("  saved models/ (baseline_logreg.joblib, xgboost.joblib, metadata.json)")
