@@ -151,3 +151,50 @@ def test_log_metrics_adds_a_new_column_without_misaligning_old_rows(tmp_path, mo
     assert list(df["roc_auc"]) == [0.8, 0.7, 0.6]
     assert df["brier"].isna().tolist() == [True, False, False]
     assert list(df["brier"].iloc[1:]) == [0.15, 0.12]
+
+
+# --------------------------------------------------------------- Qini
+# Six customers, already in score order; T = sent the offer, C = control.
+#   k  arm  churn | N_T C_T N_C C_C | Q = C_C * N_T / N_C - C_T
+#   1  T    0     |  1   0   0   0  | 0 (no control yet)
+#   2  C    1     |  1   0   1   1  | 1 * 1/1 - 0 = 1
+#   3  T    0     |  2   0   1   1  | 1 * 2/1 - 0 = 2
+#   4  C    1     |  2   0   2   2  | 2 * 2/2 - 0 = 2
+#   5  T    1     |  3   1   2   2  | 2 * 3/2 - 1 = 2
+#   6  C    0     |  3   1   3   2  | 2 * 3/3 - 1 = 1
+Q_CHURN = np.array([0, 1, 0, 1, 1, 0])
+Q_TREAT = np.array([1, 0, 1, 0, 1, 0])
+Q_SCORE = np.array([0.9, 0.8, 0.7, 0.6, 0.5, 0.4])
+
+
+def test_qini_curve_on_hand_example():
+    fraction, q = metrics.qini_curve(Q_CHURN, Q_TREAT, Q_SCORE)
+    np.testing.assert_allclose(fraction, np.arange(7) / 6)
+    np.testing.assert_allclose(q, [0, 0, 1, 2, 2, 2, 1])
+
+
+def test_qini_curve_sorts_by_score_not_input_order():
+    perm = np.array([3, 0, 5, 1, 4, 2])
+    _, q = metrics.qini_curve(Q_CHURN[perm], Q_TREAT[perm], Q_SCORE[perm])
+    np.testing.assert_allclose(q, [0, 0, 1, 2, 2, 2, 1])
+
+
+def test_qini_coefficient_on_hand_example():
+    # Trapezoid area under Q / n with dx = 1/6:
+    #   (1/6) * (0/2 + 0 + 1 + 2 + 2 + 2 + 1/2) / 6 = 7.5 / 36
+    # Random line from (0, 0) to (1, 1/6): area 1/12 = 3 / 36.
+    # Coefficient = 4.5 / 36 = 0.125.
+    assert metrics.qini_coefficient(Q_CHURN, Q_TREAT, Q_SCORE) == pytest.approx(0.125)
+
+
+def test_qini_coefficient_is_negative_for_the_reversed_ordering():
+    # Reversed scores visit the rows bottom-up: (C,0), (T,1), (C,1), (T,0),
+    # (C,1), (T,0), as (arm, churn). Q after each row:
+    #   1: 0 * 0/1 - 0 = 0         4: 1 * 2/2 - 1 = 0
+    #   2: 0 * 1/1 - 1 = -1        5: 2 * 2/3 - 1 = 1/3
+    #   3: 1 * 1/2 - 1 = -1/2      6: 2 * 3/3 - 1 = 1
+    # Area under Q / n: (1/6) * (0 - 1 - 1/2 + 0 + 1/3 + 1/2) / 6 = (-2/3) / 36.
+    # Minus the random line's 3 / 36: -(11/3) / 36 = -11/108.
+    _, q = metrics.qini_curve(Q_CHURN, Q_TREAT, -Q_SCORE)
+    np.testing.assert_allclose(q, [0, 0, -1, -0.5, 0, 1 / 3, 1])
+    assert metrics.qini_coefficient(Q_CHURN, Q_TREAT, -Q_SCORE) == pytest.approx(-11 / 108)

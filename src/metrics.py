@@ -93,6 +93,50 @@ def capture_at_top(y_true, proba, fraction: float) -> dict:
             "precision_in_group": hits / k, "lift": capture / fraction}
 
 
+def qini_curve(churn, treatment, score):
+    """Qini curve for a retention campaign: incremental customers retained when
+    the customers with the highest `score` are contacted first.
+
+    After contacting the top k customers, with N_T / N_C treated / control
+    customers and C_T / C_C churners among them, the Qini value is
+
+        Q(k) = C_C * N_T / N_C - C_T
+
+    i.e. the churners we would expect among the treated customers had they
+    behaved like the controls, minus the churners actually seen. Q(k) = 0 while
+    no control customer has been reached. Ties in `score` keep the input order.
+
+    Returns (fraction contacted, Q), both of length n + 1, starting at (0, 0).
+    """
+    churn = np.asarray(churn, dtype=float)
+    treatment = np.asarray(treatment, dtype=int)
+    order = np.argsort(-np.asarray(score, dtype=float), kind="stable")
+    t = treatment[order]
+    c = churn[order]
+    n_t = np.cumsum(t)
+    n_c = np.cumsum(1 - t)
+    churn_t = np.cumsum(c * t)
+    churn_c = np.cumsum(c * (1 - t))
+    with np.errstate(divide="ignore", invalid="ignore"):
+        q = np.where(n_c > 0, churn_c * n_t / n_c, 0.0) - churn_t
+    fraction = np.arange(len(churn) + 1) / len(churn)
+    return fraction, np.concatenate([[0.0], q])
+
+
+def qini_coefficient(churn, treatment, score) -> float:
+    """Area between the Qini curve and the random-targeting line, per customer.
+
+    Both axes are scaled to [0, 1] of the population (x: share contacted,
+    y: incremental customers retained / n), so the value does not grow with n.
+    The random line runs straight from (0, 0) to the curve's end point. A
+    random ordering scores about 0; a useful ordering scores above 0.
+    """
+    fraction, q = qini_curve(churn, treatment, score)
+    gain = q / len(q[1:])
+    area = float(np.sum((gain[1:] + gain[:-1]) / 2 * np.diff(fraction)))
+    return area - gain[-1] / 2
+
+
 def log_metrics(rows: list[dict]):
     """Append rows to results/metrics.csv (one row per model per evaluation)."""
     config.RESULTS_DIR.mkdir(parents=True, exist_ok=True)
