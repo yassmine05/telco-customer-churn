@@ -1,14 +1,10 @@
 # Lint configuration (run: ruff check .)
 target-version = "py311"
 line-length = 100
+# Folders holding first-party modules: src/ modules import each other as top-level
+# modules (pytest.ini puts src/ on the path) and tests import shared helpers from conftest.
+src = ["src", "tests"]
 
 [lint]
 select = ["E", "F", "I", "B", "UP"]
 
-[lint.isort]
-# Modules in src/ import each other as top-level modules (pytest.ini puts src/ on the path);
-# tests import shared fixtures from conftest the same way.
-known-first-party = [
-    "conftest", "config", "data", "eda", "evaluate", "explain", "metrics", "plotting",
-    "run_all", "train",
-]

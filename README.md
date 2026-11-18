@@ -129,9 +129,9 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-[GitHub Actions](.github/workflows/ci.yml) runs `ruff check .` and `pytest` on every push, on Python 3.11 and 3.12.
+[GitHub Actions](.github/workflows/ci.yml) runs `ruff check .` and `pytest` on every push to `main` and every pull request into it, on Python 3.11 and 3.12.
 
-The 68 tests run in about 12 seconds. They do not need the Kaggle CSV or network access. They run on a 200-row synthetic dataset with the same columns and quirks as the real file, write only to a temporary folder, and never touch `results/` or `models/`. They check:
+The 68 tests run in about 15 seconds. They do not need the Kaggle CSV or network access. They run on a 200-row synthetic dataset with the same columns and quirks as the real file, write only to a temporary folder, and never touch `results/` or `models/`. They check:
 
 - **Cleaning and split:** blank `TotalCharges` handling, the 0/1 target, the dropped ID column, the stratified 80/20 proportions, no customer in both sets, and that the same seed gives the same split.
 - **Leakage:** preprocessing is fitted inside the pipeline on training rows only, and the EDA, training and SHAP steps never read the test labels. The training and EDA steps also never read the test features. Any access fails the run.
