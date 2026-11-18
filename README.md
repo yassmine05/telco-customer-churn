@@ -101,6 +101,25 @@ Optional interactive app (enter a customer, get a risk score and a SHAP explanat
 streamlit run app/streamlit_app.py
 ```
 
+## Running the tests
+
+```bash
+pip install -r requirements-dev.txt
+```
+
+```bash
+pytest
+```
+
+The 60 tests run in about 12 seconds. They do not need the Kaggle CSV or network access. They run on a 200-row synthetic dataset with the same columns and quirks as the real file, write only to a temporary folder, and never touch `results/` or `models/`. They check:
+
+- **Cleaning and split:** blank `TotalCharges` handling, the 0/1 target, the dropped ID column, the stratified 80/20 proportions, no customer in both sets, and that the same seed gives the same split.
+- **Leakage:** preprocessing is fitted inside the pipeline on training rows only, and the EDA, training and SHAP steps never read the test labels. The training and EDA steps also never read the test features. Any access fails the run.
+- **Thresholds:** they are chosen from out-of-fold training predictions (recomputed independently and compared), and the minimum-cost choice is verified on hand-built examples.
+- **Helpers and models:** the cost function, top-k capture and lift, `scale_pos_weight`, identical predictions across repeat training runs, and SHAP values that add up to the model output.
+- **End to end:** an end-to-end run on the synthetic data writes every figure, model and results file.
+- **Published settings:** guards keep the seed, the cost ratio and the 100-combination search grid unchanged, so the published numbers stay reproducible.
+
 ## How it was built
 
 ```
@@ -116,6 +135,7 @@ streamlit run app/streamlit_app.py
 │   ├── metrics.py         metric and cost helpers
 │   ├── plotting.py        shared figure style
 │   └── run_all.py         runs everything in order
+├── tests/                 pytest suite on synthetic data (see "Running the tests")
 ├── app/streamlit_app.py   interactive demo
 ├── reports/figures/       saved plots
 └── results/               metrics.csv, grid-search table, SHAP importances
