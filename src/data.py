@@ -25,7 +25,15 @@ def load_and_clean(path=config.DATA_PATH) -> pd.DataFrame:
     # customers (tenure == 0) who have not been billed yet -> 0.
     total = pd.to_numeric(df["TotalCharges"], errors="coerce")
     blank = total.isna()
-    assert (df.loc[blank, "tenure"] == 0).all(), "Blank TotalCharges with tenure > 0"
+    # Filling with 0 is only right for customers who have never been billed.
+    # An explicit check (not `assert`) so it still runs under `python -O`.
+    unexpected = df.index[blank & (df["tenure"] != 0)]
+    if len(unexpected):
+        raise ValueError(
+            f"{len(unexpected)} row(s) have a blank TotalCharges but tenure > 0, "
+            f"so the blank cannot mean 'not billed yet'. First row indices: "
+            f"{unexpected[:5].tolist()}"
+        )
     df["TotalCharges"] = total.fillna(0.0)
 
     # Target as 0/1.

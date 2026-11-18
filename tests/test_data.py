@@ -30,14 +30,37 @@ def test_non_blank_total_charges_are_parsed_unchanged(raw_df, clean_df):
 
 def test_blank_total_charges_with_positive_tenure_is_rejected(raw_df, tmp_path):
     # data.py only fills blanks with 0 because they belong to tenure-0 customers.
-    # A blank for an existing customer would be a different problem, so it must fail.
+    # A blank for an existing customer would be a different problem, so it must
+    # fail with a ValueError (an `assert` would vanish under `python -O`).
     bad = raw_df.copy()
-    row = bad.index[bad["tenure"] > 0][0]
-    bad.loc[row, "TotalCharges"] = " "
+    rows = bad.index[bad["tenure"] > 0][:2].tolist()
+    bad.loc[rows, "TotalCharges"] = " "
     path = tmp_path / "bad.csv"
     bad.to_csv(path, index=False)
-    with pytest.raises(AssertionError, match="Blank TotalCharges"):
+    with pytest.raises(ValueError) as excinfo:
         load_and_clean(path)
+    message = str(excinfo.value)
+    assert message.startswith("2 row(s) have a blank TotalCharges but tenure > 0")
+    assert str(rows) in message
+
+
+def test_tenure_check_survives_python_optimise_flag(raw_df, tmp_path):
+    # Run the check in a separate `python -O` process, where asserts are stripped.
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    bad = raw_df.copy()
+    bad.loc[bad.index[bad["tenure"] > 0][0], "TotalCharges"] = " "
+    path = tmp_path / "bad.csv"
+    bad.to_csv(path, index=False)
+    src = Path(__file__).resolve().parents[1] / "src"
+    code = ("import sys; sys.path.insert(0, sys.argv[1]); from pathlib import Path; "
+            "from data import load_and_clean; load_and_clean(Path(sys.argv[2]))")
+    result = subprocess.run([sys.executable, "-O", "-c", code, str(src), str(path)],
+                            capture_output=True, text=True)
+    assert result.returncode != 0
+    assert "ValueError" in result.stderr
 
 
 def test_churn_is_mapped_to_0_and_1(raw_df, clean_df):
