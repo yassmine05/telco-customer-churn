@@ -1,0 +1,7 @@
+segment,customers,share,mean_p_control,mean_true_uplift
+sure_thing,336,0.2385,0.0304,0.0000
+sleeping_dog,67,0.0476,0.2892,-0.0500
+lost_cause,232,0.1647,0.6381,0.0000
+persuadable,320,0.2271,0.3903,0.1846
+other,454,0.3222,0.1590,0.0288
+all,1409,1.0000,0.2659,0.0488
