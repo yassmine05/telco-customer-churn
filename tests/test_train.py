@@ -77,6 +77,10 @@ def test_unseen_value_in_a_yes_no_column_is_read_as_the_dropped_level(split_data
     # unknown value in a two-level column encodes as all zeros, which is the
     # same as the dropped first level ("Female" for gender). It is silently
     # treated as that level rather than as "unknown".
+    # The pipeline itself still behaves this way, but schema validation now
+    # blocks this path: data.load_and_clean and the Streamlit app reject such
+    # rows before they reach the model (see
+    # tests/test_schema.py::test_inference_schema_rejects_unknown_gender).
     _, X_test, _, _ = split_data
     as_unknown, as_female = X_test.copy(), X_test.copy()
     as_unknown["gender"] = "Unknown"

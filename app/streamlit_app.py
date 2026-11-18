@@ -16,6 +16,7 @@ import streamlit as st
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import config  # noqa: E402
 from explain import explain  # noqa: E402
+from schema import INFERENCE_SCHEMA, DataValidationError, validate  # noqa: E402
 
 st.set_page_config(page_title="Telco churn risk", layout="wide")
 
@@ -82,6 +83,15 @@ customer = pd.DataFrame([{
 }])
 
 # ------------------------------------------------------------------ output
+# Validate before scoring: an unknown level in a Yes/No column would otherwise
+# be scored silently as the dropped level (see src/schema.py).
+try:
+    validate(customer, INFERENCE_SCHEMA)
+except DataValidationError as error:
+    st.error("This customer cannot be scored because the input failed validation:\n\n"
+             + str(error))
+    st.stop()
+
 score = float(pipeline.predict_proba(customer)[0, 1])
 flagged = score >= threshold
 

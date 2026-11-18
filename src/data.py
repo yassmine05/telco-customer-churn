@@ -3,6 +3,7 @@ import pandas as pd
 from sklearn.model_selection import train_test_split
 
 import config
+from schema import RAW_SCHEMA, validate
 
 
 def load_and_clean(path=config.DATA_PATH) -> pd.DataFrame:
@@ -18,9 +19,6 @@ def load_and_clean(path=config.DATA_PATH) -> pd.DataFrame:
         )
     df = pd.read_csv(path)
 
-    # customerID is an identifier, not a feature.
-    df = df.drop(columns=["customerID"])
-
     # TotalCharges is stored as text; blank strings belong to brand-new
     # customers (tenure == 0) who have not been billed yet -> 0.
     total = pd.to_numeric(df["TotalCharges"], errors="coerce")
@@ -35,6 +33,14 @@ def load_and_clean(path=config.DATA_PATH) -> pd.DataFrame:
             f"{unexpected[:5].tolist()}"
         )
     df["TotalCharges"] = total.fillna(0.0)
+
+    # Reject unknown category levels, out-of-range numbers, duplicate IDs and
+    # inconsistent rows before anything reaches the model. Every failure is
+    # collected (lazy) and reported in one DataValidationError.
+    df = validate(df, RAW_SCHEMA)
+
+    # customerID is an identifier, not a feature.
+    df = df.drop(columns=["customerID"])
 
     # Target as 0/1.
     df[config.TARGET] = (df[config.TARGET] == "Yes").astype(int)
