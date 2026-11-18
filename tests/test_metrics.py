@@ -134,3 +134,20 @@ def test_log_metrics_appends_with_a_single_header(tmp_path, monkeypatch):
     assert list(df.columns[:2]) == ["run_time", "seed"]
     assert (df["seed"] == config.SEED).all()
     assert df.loc[0, "roc_auc"] == 0.8123     # written with 4 decimals
+
+
+def test_log_metrics_adds_a_new_column_without_misaligning_old_rows(tmp_path, monkeypatch):
+    # Older runs did not log a Brier score; a run that does must widen the
+    # file rather than shift its values under the wrong headers.
+    monkeypatch.setattr(config, "ROOT", tmp_path)
+    monkeypatch.setattr(config, "RESULTS_DIR", tmp_path / "results")
+    monkeypatch.setattr(config, "METRICS_PATH", tmp_path / "results" / "metrics.csv")
+    metrics.log_metrics([{"model": "old", "roc_auc": 0.8, "params": "{}"}])
+    metrics.log_metrics([{"model": "new", "roc_auc": 0.7, "brier": 0.15, "params": "{}"}])
+    metrics.log_metrics([{"model": "newer", "roc_auc": 0.6, "brier": 0.12, "params": "{}"}])
+    df = pd.read_csv(tmp_path / "results" / "metrics.csv")
+    assert list(df.columns) == ["run_time", "seed", "model", "roc_auc", "params", "brier"]
+    assert list(df["model"]) == ["old", "new", "newer"]
+    assert list(df["roc_auc"]) == [0.8, 0.7, 0.6]
+    assert df["brier"].isna().tolist() == [True, False, False]
+    assert list(df["brier"].iloc[1:]) == [0.15, 0.12]

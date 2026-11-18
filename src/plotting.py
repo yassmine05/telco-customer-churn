@@ -9,6 +9,7 @@ import config
 # Palette: one colour per job, never cycled.
 BLUE = "#2a78d6"     # primary series / XGBoost
 ORANGE = "#eb6834"   # second series / baseline
+GREEN = "#1f9e6e"    # third series / calibrated XGBoost
 GREY = "#8a8985"     # reference lines (random, overall rate)
 INK = "#0b0b0b"
 INK_SOFT = "#52514e"

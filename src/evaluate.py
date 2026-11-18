@@ -11,20 +11,25 @@ import joblib
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from sklearn.metrics import precision_recall_curve
+from sklearn.metrics import log_loss, precision_recall_curve
 
 import config
 import metrics
 import plotting
 from data import load_train_test
 
-MODELS = {"baseline_logreg": "Logistic regression", "xgboost": "XGBoost"}
-COLOURS = {"baseline_logreg": plotting.ORANGE, "xgboost": plotting.BLUE}
+MODELS = {"baseline_logreg": "Logistic regression", "xgboost": "XGBoost",
+          "xgboost_calibrated": "XGBoost (calibrated)"}
+COLOURS = {"baseline_logreg": plotting.ORANGE, "xgboost": plotting.BLUE,
+           "xgboost_calibrated": plotting.GREEN}
+# Ranking views (PR curve, gains): calibration barely changes the ordering, so
+# these keep to the baseline and the raw XGBoost score.
+RANKING_MODELS = {k: MODELS[k] for k in ("baseline_logreg", "xgboost")}
 
 
 def plot_confusion_matrices(y, probas, thresholds):
     """Side-by-side confusion matrices at each model's cost-based threshold."""
-    fig, axes = plt.subplots(1, 2, figsize=(9, 4))
+    fig, axes = plt.subplots(1, len(MODELS), figsize=(4.5 * len(MODELS), 4))
     for ax, name in zip(axes, MODELS, strict=True):
         m = metrics.classification_metrics(y, probas[name], thresholds[name])
         grid = np.array([[m["tn"], m["fp"]], [m["fn"], m["tp"]]])
@@ -45,7 +50,7 @@ def plot_confusion_matrices(y, probas, thresholds):
 def plot_pr_curves(y, probas, thresholds):
     """Precision-recall curves with the chosen operating points marked."""
     fig, ax = plt.subplots(figsize=(7, 4.6))
-    for name, label in MODELS.items():
+    for name, label in RANKING_MODELS.items():
         precision, recall, _ = precision_recall_curve(y, probas[name])
         m = metrics.classification_metrics(y, probas[name], thresholds[name])
         ax.plot(recall, precision, color=COLOURS[name],
@@ -68,7 +73,7 @@ def plot_gains(y, probas):
     y = np.asarray(y)
     fig, ax = plt.subplots(figsize=(7, 4.8))
     x = np.arange(0, len(y) + 1) / len(y) * 100
-    for name, label in MODELS.items():
+    for name, label in RANKING_MODELS.items():
         order = np.argsort(-probas[name], kind="stable")
         gains = np.concatenate([[0], np.cumsum(y[order])]) / y.sum() * 100
         ax.plot(x, gains, color=COLOURS[name], label=label)
@@ -92,6 +97,27 @@ def plot_gains(y, probas):
     plotting.save(fig, "08_gains_chart.png")
 
 
+def plot_reliability(y, probas):
+    """Reliability diagram: predicted probability vs observed churn rate in
+    equal-count bins. Points on the diagonal mean the scores are calibrated."""
+    fig, ax = plt.subplots(figsize=(6.4, 5.6))
+    ax.plot([0, 1], [0, 1], color=plotting.GREY, ls="--", lw=1.2,
+            label="Perfectly calibrated")
+    for name, label in MODELS.items():
+        bins = metrics.calibration_bins(y, probas[name])
+        brier = metrics.brier_score(y, probas[name])
+        ax.plot(bins["mean_predicted"], bins["observed_rate"], color=COLOURS[name],
+                marker="o", markersize=5, label=f"{label} (Brier {brier:.3f})")
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    ax.set_aspect("equal")
+    ax.set_xlabel("Mean predicted churn probability (10 equal-count bins)")
+    ax.set_ylabel("Observed churn rate")
+    ax.set_title("Reliability diagram on the test set")
+    ax.legend(loc="upper left")
+    plotting.save(fig, "11_calibration_curve.png")
+
+
 def main():
     plotting.apply_style()
     _, X_test, _, y_test = load_train_test()
@@ -112,8 +138,9 @@ def main():
             rows.append({"model": name, "data": "test", "threshold_rule": rule, **m,
                          "top10_capture": top10["capture"],
                          "top20_capture": top20["capture"],
-                         "params": json.dumps(meta["xgb_best_params"])
-                         if name == "xgboost" else "{}"})
+                         "brier": metrics.brier_score(y_test, probas[name]),
+                         "params": "{}" if name == "baseline_logreg"
+                         else json.dumps(meta["xgb_best_params"])})
         print(f"  {name}: top 10% -> {top10['churners_found']}/{int(y_test.sum())} churners "
               f"({top10['capture']:.1%}, lift {top10['lift']:.2f}x, "
               f"precision {top10['precision_in_group']:.1%}); "
@@ -122,6 +149,12 @@ def main():
     metrics.log_metrics(rows)
     table = pd.DataFrame(rows).drop(columns=["data", "params"])
     print(table.round(4).to_string(index=False))
+
+    print("[TEST] calibration (lower is better):")
+    for name, label in MODELS.items():
+        print(f"  {label:>22}: Brier {metrics.brier_score(y_test, probas[name]):.4f}, "
+              f"log loss {log_loss(y_test, probas[name]):.4f}, "
+              f"mean predicted {probas[name].mean():.3f} vs churn rate {y_test.mean():.3f}")
 
     # Cost under the stated assumptions, to show what the threshold buys.
     for name in MODELS:
@@ -133,13 +166,20 @@ def main():
     plot_confusion_matrices(y_test, probas, thresholds)
     plot_pr_curves(y_test, probas, thresholds)
     plot_gains(y_test, probas)
+    plot_reliability(y_test, probas)
 
     # The deliverable for a retention team: every test customer, riskiest first.
-    ranked = X_test.assign(churn_probability=probas["xgboost"].round(4),
+    # churn_probability is the calibrated model's output; raw_score (the
+    # uncalibrated booster, which SHAP explains) breaks ties between customers
+    # that isotonic calibration maps to the same probability.
+    ranked = X_test.assign(churn_probability=probas["xgboost_calibrated"].round(4),
+                           raw_score=probas["xgboost"].round(4),
                            actual_churn=y_test.to_numpy())
-    ranked = ranked.sort_values("churn_probability", ascending=False)
+    ranked = ranked.sort_values(["churn_probability", "raw_score"], ascending=False,
+                                kind="stable")
     ranked.insert(0, "risk_rank", range(1, len(ranked) + 1))
-    ranked["flagged_for_offer"] = ranked["churn_probability"] >= thresholds["xgboost"]
+    ranked["flagged_for_offer"] = (ranked["churn_probability"]
+                                   >= thresholds["xgboost_calibrated"])
     path = config.RESULTS_DIR / "ranked_customers_test.csv"
     ranked.to_csv(path, index_label="row_id")
     print(f"  saved {path.relative_to(config.ROOT)}")

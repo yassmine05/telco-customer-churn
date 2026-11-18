@@ -4,6 +4,12 @@ SHAP values describe what the MODEL relies on to produce a score. They are not
 causal effects: a large SHAP value for "month-to-month contract" does not prove
 that moving a customer to a yearly contract would stop them leaving.
 
+They explain the uncalibrated booster (models/xgboost.joblib), i.e. the raw
+score in log-odds, not the calibrated probability from
+models/xgboost_calibrated.joblib. Calibration is a separate, roughly monotone
+mapping applied on top of an ensemble of boosters, which TreeExplainer cannot
+see through.
+
 Run:  python src/explain.py     (after python src/train.py)
 """
 import joblib
@@ -68,7 +74,7 @@ def main():
     shap.plots.waterfall(explanation[idx], max_display=10, show=False)
     fig = plt.gcf()
     fig.set_size_inches(9, 5.5)
-    plt.title(f"Why this customer scores {proba[idx]:.0%} churn risk "
+    plt.title(f"Why this customer's raw score is {proba[idx]:.0%} "
               "(contributions in log-odds)", loc="left", fontweight="bold", fontsize=12,
               pad=30)
     plotting.save(fig, "10_shap_waterfall_customer.png")
